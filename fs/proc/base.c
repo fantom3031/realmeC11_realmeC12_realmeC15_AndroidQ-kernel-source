@@ -3216,6 +3216,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 // Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
     REG("stuck_info", S_IRUGO | S_IWUGO, proc_stuck_trace_operations),
 #endif
+REG("static_ux", S_IRUGO | S_IWUGO, proc_static_ux_operations),
 };
 
 static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
@@ -3605,10 +3606,10 @@ static const struct pid_entry tid_base_stuff[] = {
 	ONE("time_in_state", 0444, proc_time_in_state_show),
 #endif
 #ifdef VENDOR_EDIT
-/* Wen.Luo@BSP.Kernel.Stability, 2019/04/26, Add for Process memory statistics */
+/* Wen.Luo@BSP.Kernel.Stabilityendifendif, 2019/04/26, Add for Process memory statistics */
 	REG("real_phymemory",   S_IRUGO, proc_pid_real_phymemory_ops),
 #endif
-
+REG("static_ux", S_IRUGO | S_IWUGO, proc_static_ux_operations), 
 };
 
 static int proc_tid_base_readdir(struct file *file, struct dir_context *ctx)
