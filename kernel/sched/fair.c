@@ -1052,9 +1052,11 @@ update_stats_enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 				schedstat_inc(se->statistics.iowait_count);
 				trace_sched_stat_iowait(tsk, delta);
 #ifdef VENDOR_EDIT
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
 // wenbin.liu@PSW.BSP.MM, 2018/05/09
 // Add for get iowait
                 ohm_schedstats_record(OHM_SCHED_IOWAIT, current_is_fg(), (delta >> 20));
+#endif
 #endif /*VENDOR_EDIT*/
 			}
 
