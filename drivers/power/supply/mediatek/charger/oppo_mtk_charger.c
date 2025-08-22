@@ -4988,7 +4988,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 
 	mtk_charger_init_timer(info);
 
-	if(0)
+//	if(0)
 	kthread_run(charger_routine_thread, info, "charger_thread");
 
 	if (info->chg1_dev != NULL && info->do_event != NULL) {
