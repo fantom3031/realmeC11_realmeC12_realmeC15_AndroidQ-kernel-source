@@ -244,7 +244,7 @@ void charger_log_flash(const char *fmt, ...)
 
 void _wake_up_charger(struct charger_manager *info)
 {
-#ifdef ODM_WT_EDIT
+#ifndef ODM_WT_EDIT
 /* Junbo.Guo@ODM_WT.BSP.CHG.Basic, 20191109,Add for release charger wakelock */
 	return;
 #else
