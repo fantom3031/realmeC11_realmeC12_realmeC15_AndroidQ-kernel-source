@@ -1819,7 +1819,7 @@ static int charger_routine_thread(void *arg)
 	unsigned long flags;
 	bool is_charger_on;
 	int bat_current, chg_current;
-
+    chr_info("test charger_routine_thread");
 	while (1) {
 		wait_event(info->wait_que,
 			(info->charger_thread_timeout == true));
