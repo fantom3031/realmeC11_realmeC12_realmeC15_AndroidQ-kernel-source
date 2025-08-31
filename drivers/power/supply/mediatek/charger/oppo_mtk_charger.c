@@ -1927,12 +1927,15 @@ static void chg_work()
 //		pr_err("ffc Couldn't get bms capacity:%d\n", rc);
 //		goto out;
 //	}
+	 pr_info("test 19");
 	if (pinfo == NULL)
 	{
+		 pr_info("test 20");
 		chr_err("pinfo==NULL\n");
 	}
 	else
 	{
+		 pr_info("test 21");
 	disable_charging = is_charging_disabled(capacity);
 	if (disable_charging && capacity > pinfo->charge_stop_level)
 		disable_pwrsrc = true;
@@ -1958,15 +1961,16 @@ static int charger_routine_thread(void *arg)
 	int bat_current, chg_current;
 pr_info("test charger_routine_thread");
 	while (1) {
+		 pr_info("test 1");
 		wait_event(info->wait_que,
 			(info->charger_thread_timeout == true));
-
+pr_info("test 2");
 		mutex_lock(&info->charger_lock);
 		spin_lock_irqsave(&info->slock, flags);
 		if (!info->charger_wakelock.active)
 			__pm_stay_awake(&info->charger_wakelock);
 		spin_unlock_irqrestore(&info->slock, flags);
-
+pr_info("test 3");
 		info->charger_thread_timeout = false;
 		bat_current = battery_get_bat_current();
 		chg_current = pmic_get_charging_current();
@@ -1977,25 +1981,32 @@ pr_info("test charger_routine_thread");
 			mt_get_charger_type(), info->chr_type,
 			info->enable_hv_charging, info->pd_type,
 			info->pd_reset);
-
+pr_info("test 4");
 		if (info->pd_reset == true) {
 			mtk_pe40_plugout_reset(info);
 			info->pd_reset = false;
 		}
-
+pr_info("test 5");
 		is_charger_on = mtk_is_charger_on(info);
 
 		if (info->charger_thread_polling == true)
 			mtk_charger_start_timer(info);
-
+pr_info("test 6");
 		charger_update_data(info);
+		 pr_info("test 7");
 		check_battery_exist(info);
+		 pr_info("test 8");
 		check_dynamic_mivr(info);
+		 pr_info("test 9");
 		charger_check_status(info);
+		 pr_info("test 10");
 		kpoc_power_off_check(info);
+		 pr_info("test 11");
 #ifdef CONFIG_LIMIT_CHARGER
 		chg_work();
+		 pr_info("test 12");
 #endif
+		
 		if (is_disable_charger() == false) {
 			if (is_charger_on == true) {
 				if (info->do_algorithm)
@@ -2003,7 +2014,7 @@ pr_info("test charger_routine_thread");
 			}
 		} else
 			chr_debug("disable charging\n");
-
+pr_info("test 13");
 		spin_lock_irqsave(&info->slock, flags);
 		__pm_relax(&info->charger_wakelock);
 		spin_unlock_irqrestore(&info->slock, flags);
@@ -4991,7 +5002,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 
 //	if(0)
 	kthread_run(charger_routine_thread, info, "charger_thread");
-
+pr_info("kthread running");
 	if (info->chg1_dev != NULL && info->do_event != NULL) {
 		info->chg1_nb.notifier_call = info->do_event;
 		register_charger_device_notifier(info->chg1_dev,
@@ -5003,7 +5014,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 	ret = mtk_charger_setup_files(pdev);
 	if (ret)
 		chr_err("Error creating sysfs interface\n");
-
+pr_info(" mtk_charger_setup_files");
 	info->pd_adapter = get_adapter_by_name("pd_adapter");
 	if (info->pd_adapter)
 		chr_err("Found PD adapter [%s]\n",
@@ -5019,7 +5030,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 
 	if (mtk_pe40_init(info) == false)
 		info->enable_pe_4 = false;
-
+pr_info("mtk_pdc_init");
 	mtk_pdc_init(info);
 
 	charger_ftm_init();
