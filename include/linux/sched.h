@@ -311,7 +311,7 @@ extern int sysctl_uifirst_enabled;
 extern int sysctl_launcher_boost_enabled;
 #endif /* VENDOR_EDIT */
 
-#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+#if defined(VENDOR_EDIT)
 // Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
 struct uifirst_d_state {
     u64 iowait_ns;
