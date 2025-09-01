@@ -615,7 +615,7 @@ INT32 wmt_conf_read_file(VOID)
 	//	} else
 			osal_strncat(&(gDevWmt.cWmtcfgName[0]), CUST_CFG_WMT_SOC,
 				     osal_sizeof(CUST_CFG_WMT_SOC));
-//	}
+	}
 
 try_read:
 	if (!osal_strlen(&(gDevWmt.cWmtcfgName[0]))) {
