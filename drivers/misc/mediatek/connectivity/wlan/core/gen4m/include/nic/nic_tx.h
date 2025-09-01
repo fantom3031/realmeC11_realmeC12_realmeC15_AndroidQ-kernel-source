@@ -215,10 +215,13 @@
 #define NIC_TX_AC_VI_REMAINING_TX_TIME	TX_DESC_TX_TIME_NO_LIMIT
 #define NIC_TX_MGMT_REMAINING_TX_TIME		2000
 
-#define NIC_TX_CRITICAL_DATA_TID                7
+#define NIC_TX_CRITICAL_DATA_TID	7
+#define NIC_TX_PRIORITY_DATA_TID	6 /*802.1d Voice Traffic,use AC_VO */
 
 /*Customization: sk_buff mark for special packet that need raise priority */
-#define NIC_TX_SKB_SPECIAL_MARK			0x5a
+#define NIC_TX_SKB_PRIORITY_MARK1	0x5a /* customer special value*/
+#define NIC_TX_SKB_PRIORITY_MARK_BIT	31 /*Mediatek define, 0x80000000*/
+#define NIC_TX_SKB_DUP_DETECT_MARK_BIT	30 /*Mediatek define, 0x40000000*/
 
 #define HW_MAC_TX_DESC_APPEND_T_LENGTH          44
 #define NIC_TX_HEAD_ROOM \
@@ -701,6 +704,8 @@ struct TX_CTRL {
 
 	/* Number to track forwarding frames */
 	int32_t i4PendingFwdFrameCount;
+	/* Number to track forwarding frames for WMM resource control */
+	int32_t i4PendingFwdFrameWMMCount[TC_NUM];
 
 	/* enable/disable TX resource control */
 	u_int8_t fgIsTxResourceCtrl;
@@ -708,7 +713,7 @@ struct TX_CTRL {
 	uint32_t u4MaxPageCntPerFrame;
 
 	/* Store SysTime of Last TxDone successfully */
-	uint32_t u4LastTxTime;
+	uint32_t u4LastTxTime[MAX_BSSID_NUM];
 };
 
 enum ENUM_TX_PACKET_TYPE {
@@ -1767,6 +1772,9 @@ uint32_t nicTxInitCmd(IN struct ADAPTER *prAdapter,
 
 uint32_t nicTxInitResetResource(IN struct ADAPTER *prAdapter);
 #endif
+
+u_int8_t nicTxProcessCmdDataPacket(IN struct ADAPTER *prAdapter,
+			       IN struct MSDU_INFO *prMsduInfo);
 
 uint32_t nicTxEnqueueMsdu(IN struct ADAPTER *prAdapter,
 	IN struct MSDU_INFO *prMsduInfo);

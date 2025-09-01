@@ -1,4 +1,6 @@
 /*
+* Copyright (C) 2016 MediaTek Inc.
+*
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 as
 * published by the Free Software Foundation.
@@ -1323,19 +1325,21 @@ WLAN_STATUS nicActivateNetwork(IN P_ADAPTER_T prAdapter, IN ENUM_NETWORK_TYPE_IN
 	P_BSS_INFO_T prBssInfo;
 
 	ASSERT(prAdapter);
-	ASSERT(eNetworkTypeIdx < NETWORK_TYPE_INDEX_NUM);
+
+	if (eNetworkTypeIdx >= NETWORK_TYPE_INDEX_NUM) {
+		DBGLOG(NIC, WARN, "eNetworkTypeIdx: %d\n", eNetworkTypeIdx);
+		return WLAN_STATUS_FAILURE;
+	}
 
 	rCmdActivateCtrl.ucNetTypeIndex = (UINT_8) eNetworkTypeIdx;
 	rCmdActivateCtrl.ucActive = 1;
 	rCmdActivateCtrl.ucVersion = 1;
 
-	if (((UINT_8) eNetworkTypeIdx) < NETWORK_TYPE_INDEX_NUM) {
-		prBssInfo = &prAdapter->rWifiVar.arBssInfo[eNetworkTypeIdx];
-		COPY_MAC_ADDR(rCmdActivateCtrl.aucBssMacAddr,
-			      prBssInfo->aucOwnMacAddr);
-		prBssInfo->fg40mBwAllowed = FALSE;
-		prBssInfo->fgAssoc40mBwAllowed = FALSE;
-	}
+	prBssInfo = &prAdapter->rWifiVar.arBssInfo[eNetworkTypeIdx];
+	COPY_MAC_ADDR(rCmdActivateCtrl.aucBssMacAddr,
+		      prBssInfo->aucOwnMacAddr);
+	prBssInfo->fg40mBwAllowed = FALSE;
+	prBssInfo->fgAssoc40mBwAllowed = FALSE;
 
 	DBGLOG(NIC, INFO, "OwnMac=" MACSTR " BSSID=" MACSTR " NetType=%d\n",
 	       MAC2STR(prBssInfo->aucOwnMacAddr),
@@ -1501,7 +1505,11 @@ WLAN_STATUS nicUpdateBss(IN P_ADAPTER_T prAdapter, IN ENUM_NETWORK_TYPE_INDEX_T 
 	else
 		rCmdSetBssInfo.ucStaRecIdxOfAP = STA_REC_INDEX_NOT_FOUND;
 
-	DBGLOG(NIC, INFO, "nicUpdateBss eNetworkTypeIdx: %d\n", eNetworkTypeIdx);
+	DBGLOG(NIC, INFO,
+		"nicUpdateBss eNetworkTypeIdx: %d, OwnMac=" MACSTR "\n",
+		eNetworkTypeIdx,
+		MAC2STR(prBssInfo->aucOwnMacAddr));
+
 	u4Status = wlanSendSetQueryCmd(prAdapter,
 				       CMD_ID_SET_BSS_INFO,
 				       TRUE,

@@ -71,6 +71,10 @@
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
 */
+extern char *HW_TX_MODE_STR[];
+extern char *HW_TX_RATE_CCK_STR[];
+extern char *HW_TX_RATE_OFDM_STR[];
+extern char *HW_TX_RATE_BW[];
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -228,6 +232,50 @@
 /* Define magic key of test mode (Don't change it for future compatibity) */
 #define PRIV_CMD_TEST_MAGIC_KEY                         2011
 #define PRIV_CMD_TEST_MAGIC_KEY_ICAP                         2013
+
+/* CFG_SUPPORT_ADVANCE_CONTROL */
+#define TX_RATE_MODE_CCK	0
+#define TX_RATE_MODE_OFDM	1
+#define TX_RATE_MODE_HTMIX	2
+#define TX_RATE_MODE_HTGF	3
+#define TX_RATE_MODE_VHT	4
+#define MAX_TX_MODE 5
+
+#if CFG_SUPPORT_ADVANCE_CONTROL
+#define CMD_SW_DBGCTL_ADVCTL_SET_ID 0xa1260000
+#define CMD_SW_DBGCTL_ADVCTL_GET_ID 0xb1260000
+#define CMD_SET_NOISE           "SET_NOISE"
+#define CMD_GET_NOISE           "GET_NOISE"
+#define CMD_AFH_RANGE_CONFIG   "AFH_RANGE_CONFIG"
+#define CMD_PTA_CONFIG  "PTA_CONFIG"
+#define CMD_PTA_TAG_CONFIG  "PTA_TAG_CONFIG"
+#define CMD_BA_SIZE_CONFIG     "BA_SIZE_CONFIG"
+#define CMD_TRAFFIC_REPORT  "TRAFFIC_REPORT"
+#define CMD_SET_POP           "SET_POP"
+#define CMD_GET_POP           "GET_POP"
+#define CMD_SET_ED            "SET_ED"
+#define CMD_GET_ED            "GET_ED"
+#define CMD_SET_PD            "SET_PD"
+#define CMD_GET_PD            "GET_PD"
+#define CMD_SET_MAX_RFGAIN        "SET_MAX_RFGAIN"
+#define CMD_GET_MAX_RFGAIN        "GET_MAX_RFGAIN"
+#define CMD_NOISE_HISTOGRAM   "NOISE_HISTOGRAM"
+#define CMD_SET_ADM_CTRL	"SET_ADM"
+#define CMD_SET_BCN_TH      "SET_BCN_TH"
+#define CMD_GET_BCN_TH      "GET_BCN_TH"
+
+enum {
+	CMD_ADVCTL_NOISE_ID = 1,
+	CMD_ADVCTL_POP_ID,
+	CMD_ADVCTL_ED_ID,
+	CMD_ADVCTL_PD_ID,
+	CMD_ADVCTL_MAX_RFGAIN_ID,
+	CMD_ADVCTL_ADM_CTRL_ID,
+	CMD_ADVCTL_BCN_TH_ID = 9,
+	CMD_ADVCTL_MAX
+};
+#endif
+
 /*******************************************************************************
 *                             D A T A   T Y P E S
 ********************************************************************************
@@ -266,6 +314,13 @@ typedef struct _NDIS_TRANSPORT_STRUCT {
 	UINT_8 ndisOidContent[16];
 } NDIS_TRANSPORT_STRUCT, *P_NDIS_TRANSPORT_STRUCT;
 
+#ifdef CONFIG_COMPAT
+struct compat_android_wifi_priv_cmd {
+	compat_caddr_t buf;
+	int used_len;
+	int total_len;
+};
+#endif /* CONFIG_COMPAT */
 /*******************************************************************************
 *                            P U B L I C   D A T A
 ********************************************************************************
@@ -280,6 +335,34 @@ typedef struct _NDIS_TRANSPORT_STRUCT {
 *                                 M A C R O S
 ********************************************************************************
 */
+#define HW_TX_RATE_TO_MODE(_x)		(((_x) & (0x7 << 6)) >> 6)
+#define HW_TX_RATE_TO_MCS(_x, _mode)	((_x) & (0x3f))
+#define HW_TX_RATE_TO_NSS(_x)		(((_x) & (0x3 << 9)) >> 9)
+#define HW_TX_RATE_TO_STBC(_x)		(((_x) & (0x1 << 11)) >> 11)
+
+#define TX_VECTOR_GET_TX_RATE(_txv)     (((_txv)->u4TxVector1) & \
+						BITS(0, 6))
+#define TX_VECTOR_GET_TX_LDPC(_txv)     ((((_txv)->u4TxVector1) >> 7) & \
+						BIT(0))
+#define TX_VECTOR_GET_TX_STBC(_txv)     ((((_txv)->u4TxVector1) >> 8) & \
+						BITS(0, 1))
+#define TX_VECTOR_GET_TX_FRMODE(_txv)   ((((_txv)->u4TxVector1) >> 10) & \
+						BITS(0, 1))
+#define TX_VECTOR_GET_TX_MODE(_txv)     ((((_txv)->u4TxVector1) >> 12) & \
+						BITS(0, 2))
+#define TX_VECTOR_GET_TX_NSTS(_txv)     ((((_txv)->u4TxVector1) >> 21) & \
+						BITS(0, 1))
+#define TX_VECTOR_GET_TX_PWR(_txv)      ((((_txv)->u4TxVector1) >> 24) & \
+						BITS(0, 6))
+#define TX_VECTOR_GET_BF_EN(_txv)       ((((_txv)->u4TxVector2) >> 31) & \
+						BIT(0))
+#define TX_VECTOR_GET_DYN_BW(_txv)      ((((_txv)->u4TxVector4) >> 31) & \
+						BIT(0))
+#define TX_VECTOR_GET_NO_SOUNDING(_txv) ((((_txv)->u4TxVector4) >> 28) & \
+						BIT(0))
+#define TX_VECTOR_GET_TX_SGI(_txv)      ((((_txv)->u4TxVector4) >> 27) & \
+						BIT(0))
+
 
 /*******************************************************************************
 *                  F U N C T I O N   D E C L A R A T I O N S
@@ -318,15 +401,33 @@ int priv_support_ioctl(IN struct net_device *prDev, IN OUT struct ifreq *prReq, 
 
 int priv_support_driver_cmd(IN struct net_device *prDev, IN OUT struct ifreq *prReq, IN int i4Cmd);
 
+int priv_support_mdns_offload(IN struct net_device *prDev,
+				IN OUT struct ifreq *prReq, IN int i4Cmd);
+
+#ifdef CFG_ANDROID_AOSP_PRIV_CMD
+int android_private_support_driver_cmd(IN struct net_device *prDev, IN OUT struct ifreq *prReq, IN int i4Cmd);
+#endif /* CFG_ANDROID_AOSP_PRIV_CMD */
+
+#ifdef CFG_ALPS_ANDROID_AOSP_PRIV_CMD
+int alps_android_private_support_driver_cmd(IN struct net_device *prDev,
+	IN OUT struct ifreq *prReq, IN int i4Cmd);
+#endif /* CFG_ALPS_ANDROID_AOSP_PRIV_CMD */
+
 INT_32 priv_driver_cmds(IN struct net_device *prNetDev, IN PCHAR pcCommand, IN INT_32 i4TotalLen);
 
 int priv_driver_set_cfg(IN struct net_device *prNetDev, IN char *pcCommand, IN int i4TotalLen);
 
 #if CFG_SUPPORT_QA_TOOL
 int
+priv_qa_agent(IN struct net_device *prNetDev,
+	      IN struct iw_request_info *prIwReqInfo,
+	      IN union iwreq_data *prIwReqData, IN char *pcExtra);
+int
 priv_ate_set(IN struct net_device *prNetDev,
 	     IN struct iw_request_info *prIwReqInfo, IN union iwreq_data *prIwReqData, IN char *pcExtra);
 #endif
+
+char *hw_rate_ofdm_str(UINT_16 ofdm_idx);
 
 /*******************************************************************************
 *                              F U N C T I O N S

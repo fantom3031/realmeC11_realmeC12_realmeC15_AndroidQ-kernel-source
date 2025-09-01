@@ -1,4 +1,6 @@
 /*
+* Copyright (C) 2016 MediaTek Inc.
+*
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 as
 * published by the Free Software Foundation.
@@ -168,8 +170,7 @@ bssCreateStaRecFromBssDesc(IN P_ADAPTER_T prAdapter,
 	if (IS_STA_IN_AIS(prStaRec)) {
 		if (!((prAdapter->rWifiVar.rConnSettings.eEncStatus == ENUM_ENCRYPTION3_ENABLED) ||
 		      (prAdapter->rWifiVar.rConnSettings.eEncStatus == ENUM_ENCRYPTION3_KEY_ABSENT) ||
-		      (prAdapter->rWifiVar.rConnSettings.eEncStatus == ENUM_ENCRYPTION_DISABLED) ||
-		      (prAdapter->prGlueInfo->u2WSCAssocInfoIELen) || (prAdapter->prGlueInfo->u2WapiAssocInfoIESz))) {
+		      (prAdapter->rWifiVar.rConnSettings.eEncStatus == ENUM_ENCRYPTION_DISABLED))) {
 			DBGLOG(BSS, TRACE, "Ignore the HT Bit for TKIP as pairwise cipher configured!\n");
 			prStaRec->ucPhyTypeSet &= ~PHY_TYPE_BIT_HT;
 		}

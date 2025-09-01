@@ -1,4 +1,6 @@
 /*
+* Copyright (C) 2016 MediaTek Inc.
+*
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 as
 * published by the Free Software Foundation.
@@ -1820,7 +1822,6 @@ VOID nicRxProcessMgmtPacket(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb)
 #endif
 			nicRxReturnRFB(prAdapter, prSwRfb);
 			RX_INC_CNT(prRxCtrl, RX_DROP_TOTAL_COUNT);
-			GL_RESET_TRIGGER(prAdapter, RST_FLAG_DO_CORE_DUMP);
 			return;
 		}
 #endif
@@ -2965,6 +2966,7 @@ nicRxWaitResponse(IN P_ADAPTER_T prAdapter,
 	WLAN_STATUS u4Status = WLAN_STATUS_SUCCESS;
 	BOOLEAN fgResult = TRUE;
 	ktime_t rStartTime, rCurTime;
+	P_RX_CTRL_T prRxCtrl;
 
 	DEBUGFUNC("nicRxWaitResponse");
 
@@ -2973,6 +2975,7 @@ nicRxWaitResponse(IN P_ADAPTER_T prAdapter,
 	ASSERT(ucPortIdx < 2);
 
 	rStartTime = ktime_get();
+	prRxCtrl = &prAdapter->rRxCtrl;
 
 	do {
 		/* Read the packet length */
@@ -2995,10 +2998,17 @@ nicRxWaitResponse(IN P_ADAPTER_T prAdapter,
 			rCurTime = ktime_get();
 			if (ktime_to_ms(ktime_sub(rCurTime, rStartTime)) >
 			    RX_RESPONSE_TIMEOUT) {
+#if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
+				DBGLOG(RX, ERROR,
+				       "RX_RESPONSE_TIMEOUT %u %u %lld %lld\n",
+				       u4PktLen, i, rStartTime,
+				       rCurTime);
+#else
 				DBGLOG(RX, ERROR,
 				       "RX_RESPONSE_TIMEOUT %u %u %lld %lld\n",
 				       u4PktLen, i, rStartTime.tv64,
 				       rCurTime.tv64);
+#endif
 				return WLAN_STATUS_FAILURE;
 			}
 
@@ -3023,7 +3033,8 @@ nicRxWaitResponse(IN P_ADAPTER_T prAdapter,
 		wlanFWDLDebugAddRxStartTime(kalGetTimeTick());
 
 		HAL_PORT_RD(prAdapter,
-			    ucPortIdx == 0 ? MCR_WRDR0 : MCR_WRDR1, u4PktLen, pucRspBuffer, u4MaxRespBufferLen);
+				ucPortIdx == 0 ? MCR_WRDR0 : MCR_WRDR1, u4PktLen,
+				prRxCtrl->pucRxCoalescingBufPtr, u4MaxRespBufferLen);
 
 		wlanFWDLDebugAddRxDoneTime(kalGetTimeTick());
 
@@ -3033,6 +3044,7 @@ nicRxWaitResponse(IN P_ADAPTER_T prAdapter,
 			return WLAN_STATUS_FAILURE;
 		}
 
+		kalMemCopy(pucRspBuffer, prRxCtrl->pucRxCoalescingBufPtr, u4PktLen);
 		DBGLOG(RX, TRACE, "Dump Response buffer, length = 0x%x\n", u4PktLen);
 		DBGLOG_MEM8(RX, TRACE, pucRspBuffer, u4PktLen);
 

@@ -136,6 +136,7 @@ VOID rlmObssInit(P_ADAPTER_T prAdapter);
 VOID rlmObssScanDone(P_ADAPTER_T prAdapter, P_MSG_HDR_T prMsgHdr);
 
 VOID rlmObssTriggerScan(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo);
+VOID rlmObssAbortScan(P_ADAPTER_T prAdapter);
 
 /*******************************************************************************
 *                              F U N C T I O N S

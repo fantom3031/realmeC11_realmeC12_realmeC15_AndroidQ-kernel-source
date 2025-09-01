@@ -313,8 +313,10 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 int mtk_cfg80211_cancel_remain_on_channel(
 	struct wiphy *wiphy, struct wireless_dev *wdev, u64 cookie);
 
-uint16_t cfg80211_get_non_wfa_vendor_ie(struct GLUE_INFO
-		*prGlueInfo, uint8_t *ies, int32_t len);
+uint16_t cfg80211_get_non_wfa_vendor_ie(
+	struct GLUE_INFO *prGlueInfo,
+	uint8_t *ies, int32_t len,
+	uint8_t ucBssIndex);
 
 #if KERNEL_VERSION(3, 14, 0) <= CFG80211_VERSION_CODE
 int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
@@ -352,20 +354,25 @@ int mtk_cfg80211_testmode_cmd(struct wiphy *wiphy,
 			      void *data, int len);
 #else
 int mtk_cfg80211_testmode_cmd(struct wiphy *wiphy,
+			      struct wireless_dev *wdev,
 			      void *data, int len);
 #endif
 
 int mtk_cfg80211_testmode_sw_cmd(IN struct wiphy *wiphy,
-				 IN void *data, IN int len);
+					IN struct wireless_dev *wdev,
+					IN void *data, IN int len);
 
 #if CFG_SUPPORT_PASSPOINT
 int mtk_cfg80211_testmode_hs20_cmd(IN struct wiphy *wiphy,
-				   IN void *data, IN int len);
+					IN struct wireless_dev *wdev,
+					IN void *data, IN int len);
 #endif /* CFG_SUPPORT_PASSPOINT */
 
 #if CFG_SUPPORT_WAPI
 int mtk_cfg80211_testmode_set_key_ext(IN struct wiphy
-				      *wiphy, IN void *data, IN int len);
+				      *wiphy,
+				    IN struct wireless_dev *wdev,
+					IN void *data, IN int len);
 #endif
 #if CFG_SUPPORT_NFC_BEAM_PLUS
 int mtk_cfg80211_testmode_get_scan_done(IN struct wiphy *wiphy,
@@ -384,8 +391,14 @@ mtk_cfg80211_sched_scan_start(IN struct wiphy *wiphy,
 			      IN struct net_device *ndev,
 			      IN struct cfg80211_sched_scan_request *request);
 
+#if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
+int mtk_cfg80211_sched_scan_stop(IN struct wiphy *wiphy,
+				 IN struct net_device *ndev,
+				 IN u64 reqid);
+#else
 int mtk_cfg80211_sched_scan_stop(IN struct wiphy *wiphy,
 				 IN struct net_device *ndev);
+#endif
 #endif /* CFG_SUPPORT_SCHED_SCAN */
 
 int mtk_cfg80211_assoc(struct wiphy *wiphy,
@@ -454,7 +467,9 @@ int mtk_cfg80211_tdls_oper(struct wiphy *wiphy,
 #endif
 
 int32_t mtk_cfg80211_process_str_cmd(struct GLUE_INFO
-				     *prGlueInfo, uint8_t *cmd, int32_t len);
+				     *prGlueInfo,
+			struct wireless_dev *wdev,
+			uint8_t *cmd, int32_t len);
 
 void mtk_reg_notify(IN struct wiphy *pWiphy,
 		    IN struct regulatory_request *pRequest);
@@ -467,7 +482,13 @@ int mtk_cfg80211_resume(struct wiphy *wiphy);
 
 /* cfg80211 wrapper hooks */
 #if CFG_ENABLE_UNIFY_WIPHY
-#if KERNEL_VERSION(4, 1, 0) <= CFG80211_VERSION_CODE
+#if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
+struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
+				       const char *name,
+				       unsigned char name_assign_type,
+				       enum nl80211_iftype type,
+				       struct vif_params *params);
+#elif KERNEL_VERSION(4, 1, 0) <= CFG80211_VERSION_CODE
 struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
 				       const char *name,
 				       unsigned char name_assign_type,
@@ -482,10 +503,17 @@ struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
 #endif
 int mtk_cfg_del_iface(struct wiphy *wiphy,
 		      struct wireless_dev *wdev);
+#if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
+int mtk_cfg_change_iface(struct wiphy *wiphy,
+			 struct net_device *ndev,
+			 enum nl80211_iftype type,
+			 struct vif_params *params);
+#else
 int mtk_cfg_change_iface(struct wiphy *wiphy,
 			 struct net_device *ndev,
 			 enum nl80211_iftype type, u32 *flags,
 			 struct vif_params *params);
+#endif
 int mtk_cfg_add_key(struct wiphy *wiphy,
 		    struct net_device *ndev, u8 key_index,
 		    bool pairwise, const u8 *mac_addr,
@@ -588,8 +616,15 @@ int mtk_cfg_sched_scan_start(IN struct wiphy *wiphy,
 			     IN struct net_device *ndev,
 			     IN struct cfg80211_sched_scan_request *request);
 
+#if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
+int mtk_cfg_sched_scan_stop(IN struct wiphy *wiphy,
+			    IN struct net_device *ndev,
+			    IN u64 reqid);
+#else
 int mtk_cfg_sched_scan_stop(IN struct wiphy *wiphy,
 			    IN struct net_device *ndev);
+#endif
+
 #endif /* CFG_SUPPORT_SCHED_SCAN */
 
 int mtk_cfg_connect(struct wiphy *wiphy,
@@ -719,7 +754,13 @@ int mtk_cfg_get_txpower(struct wiphy *wiphy,
 #endif	/* CFG_ENABLE_UNIFY_WIPHY */
 
 int mtk_cfg80211_update_ft_ies(struct wiphy *wiphy, struct net_device *dev,
-			       struct cfg80211_update_ft_ies_params *ftie);
+				struct cfg80211_update_ft_ies_params *ftie);
+
+int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *dev,
+			       struct cfg80211_external_auth_params *params);
+
+int mtk_IsP2PNetDevice(struct GLUE_INFO *prGlueInfo,
+			  struct net_device *ndev);
 
 /*******************************************************************************
  *                              F U N C T I O N S

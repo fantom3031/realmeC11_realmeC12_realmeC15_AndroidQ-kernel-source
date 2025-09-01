@@ -1,4 +1,6 @@
 /*
+* Copyright (C) 2016 MediaTek Inc.
+*
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 as
 * published by the Free Software Foundation.
@@ -34,6 +36,10 @@
 
 #if CFG_ENABLE_BT_OVER_WIFI
 #include "nic/bow.h"
+#endif
+
+#if KERNEL_VERSION(4, 11, 0) <= CFG80211_VERSION_CODE
+#include "linux/sched/types.h"
 #endif
 
 #if DBG
@@ -265,7 +271,7 @@ struct KAL_HALT_CTRL_T {
 #define KAL_WAKE_LOCK(_prAdapter, _prWakeLock) \
 	__pm_stay_awake(_prWakeLock)
 #define KAL_WAKE_LOCK_TIMEOUT(_prAdapter, _prWakeLock, _u4Timeout) \
-	__pm_wakeup_event(_prWakeLock, _u4Timeout)
+	__pm_wakeup_event(_prWakeLock, JIFFIES_TO_MSEC(_u4Timeout))
 #define KAL_WAKE_UNLOCK(_prAdapter, _prWakeLock) \
 	__pm_relax(_prWakeLock)
 #define KAL_WAKE_LOCK_ACTIVE(_prAdapter, _prWakeLock) \
@@ -322,7 +328,10 @@ typedef UINT_32 KAL_WAKE_LOCK_T, *P_KAL_WAKE_LOCK_T;
 		pvAddr = kmalloc(u4Size, GFP_KERNEL); \
 	} \
 	else { \
-		pvAddr = vmalloc(u4Size); \
+		if (u4Size > PAGE_SIZE) \
+			pvAddr = vmalloc(u4Size); \
+		else \
+			pvAddr = kmalloc(u4Size, GFP_KERNEL); \
 	} \
 	if (pvAddr) {   \
 		allocatedMemSize += u4Size;   \
@@ -338,7 +347,10 @@ typedef UINT_32 KAL_WAKE_LOCK_T, *P_KAL_WAKE_LOCK_T;
 		pvAddr = kmalloc(u4Size, GFP_KERNEL); \
 	} \
 	else { \
-		pvAddr = vmalloc(u4Size); \
+		if (u4Size > PAGE_SIZE) \
+			pvAddr = vmalloc(u4Size); \
+		else \
+			pvAddr = kmalloc(u4Size, GFP_KERNEL); \
 	} \
 	pvAddr; \
 })
@@ -363,22 +375,12 @@ typedef UINT_32 KAL_WAKE_LOCK_T, *P_KAL_WAKE_LOCK_T;
 		DBGLOG(INIT, INFO, "%p(%u) freed (%s:%s)\n", \
 			pvAddr, (UINT_32)u4Size, __FILE__, __func__);  \
 	} \
-	if (eMemType == PHY_MEM_TYPE) { \
-		kfree(pvAddr); \
-	} \
-	else { \
-		vfree(pvAddr); \
-	} \
+	kvfree(pvAddr); \
 }
 #else
 #define kalMemFree(pvAddr, eMemType, u4Size) \
 {   \
-	if (eMemType == PHY_MEM_TYPE) { \
-		kfree(pvAddr); \
-	} \
-	else { \
-		vfree(pvAddr); \
-	} \
+	kvfree(pvAddr); \
 }
 #endif
 
@@ -529,6 +531,7 @@ do { \
 #define MSEC_TO_SYSTIME(_msec)      (_msec)
 
 #define MSEC_TO_JIFFIES(_msec)      msecs_to_jiffies(_msec)
+#define JIFFIES_TO_MSEC(_jiffie)    jiffies_to_msecs(_jiffie)
 
 #define KAL_HALT_LOCK_TIMEOUT_NORMAL_CASE		3000 /* 3s */
 
@@ -823,7 +826,7 @@ BOOLEAN kalIsAPmode(IN P_GLUE_INFO_T prGlueInfo);
 
 ULONG kalIOPhyAddrGet(IN ULONG VirtAddr);
 
-VOID kalDmaBufGet(OUT VOID **VirtAddr, OUT VOID **PhyAddr);
+VOID kalDmaBufGet(IN VOID *dev, OUT VOID **VirtAddr, OUT VOID **PhyAddr);
 
 #if CFG_SUPPORT_802_11W
 /*----------------------------------------------------------------------------*/
@@ -901,4 +904,7 @@ VOID kalFbNotifierUnReg(VOID);
 VOID nicConfigProcSetCamCfgWrite(BOOLEAN enabled);
 #endif
 VOID kalChangeSchedParams(P_GLUE_INFO_T prGlueInfo, BOOLEAN fgNormalThread);
+#if CFG_SUPPORT_WPA3
+int kalExternalAuthRequest(IN P_ADAPTER_T prAdapter);
+#endif
 #endif /* _GL_KAL_H */

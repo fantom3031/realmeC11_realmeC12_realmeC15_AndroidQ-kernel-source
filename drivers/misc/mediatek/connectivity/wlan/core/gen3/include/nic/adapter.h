@@ -191,6 +191,9 @@ typedef struct _CONNECTION_SETTINGS_T {
 	BOOLEAN fgSecModeChangeStartTimer;
 #endif
 	struct LINK_MGMT rBlackList;
+
+	UINT_8 *pucAssocIEs;
+	size_t assocIeLen;
 } CONNECTION_SETTINGS_T, *P_CONNECTION_SETTINGS_T;
 
 struct _BSS_INFO_T {
@@ -586,7 +589,7 @@ typedef struct _WIFI_VAR_T {
 	AIS_FSM_INFO_T rAisFsmInfo;
 
 	/* memory should be matched with max of _BssIndex to avoid buffer overflow. */
-	ENUM_PWR_STATE_T aePwrState[MAX_BSS_INDEX];
+	ENUM_PWR_STATE_T aePwrState[MAX_BSS_INDEX + 1];
 
 	BSS_INFO_T arBssInfoPool[BSS_INFO_NUM];
 
@@ -626,7 +629,7 @@ typedef struct _WIFI_VAR_T {
 	UINT_8 aucPermanentAddress[MAC_ADDR_LEN];
 	UINT_8 aucMacAddress[MAC_ADDR_LEN];
 	UINT_8 aucDeviceAddress[MAC_ADDR_LEN];
-	UINT_8 aucInterfaceAddress[MAC_ADDR_LEN];
+	UINT_8 aucInterfaceAddress[MAC_ADDR_NUM_STORE][MAC_ADDR_LEN];
 
 	UINT_8 ucAvailablePhyTypeSet;
 
@@ -736,9 +739,9 @@ typedef struct _WIFI_VAR_T {
 
 	UINT_32 u4NetifStopTh;
 	UINT_32 u4NetifStartTh;
-#if CFG_AUTO_CHANNEL_SEL_SUPPORT
+
 	PARAM_GET_CHN_INFO rChnLoadInfo;
-#endif
+
 #if CFG_SUPPORT_MTK_SYNERGY
 	UINT_8 ucMtkOui;
 	UINT_32 u4MtkOuiCap;
@@ -748,6 +751,7 @@ typedef struct _WIFI_VAR_T {
 	UINT_32 u4HifIstLoopCount;
 	UINT_32 u4Rx2OsLoopCount;
 	UINT_32 u4HifTxloopCount;
+	UINT_32 u4HifTxDataloopCount;
 	UINT_32 u4TxRxLoopCount;
 	UINT_32 u4TxFromOsLoopCount;
 
@@ -764,6 +768,17 @@ typedef struct _WIFI_VAR_T {
 	UINT_8 ucArpTxDone;
 	UINT_8 ucIcmpTxDone;
 	PARAM_POWER_MODE ePowerMode;
+#ifdef CFG_SUPPORT_DATA_STALL
+	UINT_32 u4PerHighThreshold;
+	UINT_32 u4TxLowRateThreshold;
+	UINT_32 u4RxLowRateThreshold;
+	UINT_32 u4ReportEventInterval;
+	UINT_32 u4TrafficThreshold;
+#endif
+
+#ifdef CFG_SUPPORT_COEX_IOT_AP
+	UINT_8 ucEnCoexIotAP;
+#endif
 #if CFG_RX_BA_REORDERING_ENHANCEMENT
 	BOOLEAN fgEnableReportIndependentPkt;
 #endif
@@ -774,6 +789,11 @@ typedef struct _WIFI_VAR_T {
 	struct RADIO_MEASUREMENT_REPORT_PARAMS rRmRepParams;
 
 	struct WMM_INFO rWmmInfo;
+#if ARP_MONITER_ENABLE
+	uint32_t uArpMonitorNumber;
+	uint32_t uArpMonitorRxPktNum;
+#endif /* ARP_MONITER_ENABLE */
+
 } WIFI_VAR_T, *P_WIFI_VAR_T;	/* end of _WIFI_VAR_T */
 
 /* cnm_timer module */
@@ -844,6 +864,15 @@ struct PERF_MONITOR_T {
 	UINT32 u4CurrPerfLevel;
 };
 
+#if CFG_SUPPORT_REPORT_MISC
+struct REPORT_MISC_SET {
+	UINT_64 u8Ts;
+	enum ENUM_REPORT_MISC eQueryNum;
+	INT_32 i4Rssi;
+	struct EVENT_REPORT_MISC reportMisc;
+	ULONG ulExtSrcFlag;
+};
+#endif
 /*
  * Major ADAPTER structure
  * Major data structure for driver operation
@@ -1055,6 +1084,10 @@ struct _ADAPTER_T {
 	BOOLEAN fgIsPowerLimitTableValid;
 #endif
 
+#if CFG_SUPPORT_ANT_SWAP
+	BOOLEAN fgIsAntSwpSupport;
+#endif
+
 	/* Packet Forwarding Tracking */
 	INT_32 i4PendingFwdFrameCount;
 
@@ -1092,8 +1125,29 @@ struct _ADAPTER_T {
 	BOOLEAN fgAbortScan;
 #endif
 	struct WLAN_DEBUG_INFO rDebugInfo;
+#if CFG_SUPPORT_OSHARE
+	BOOLEAN fgEnOshareMode;
+#endif
 #if CFG_DBG_MGT_BUF
 	LINK_T rMemTrackLink;
+#endif
+#if CFG_SUPPORT_REPORT_MISC
+	struct REPORT_MISC_SET rReportMiscSet;
+#endif
+#ifdef CFG_SUPPORT_LINK_QUALITY_MONITOR
+	/* link quality monitor */
+	UINT_32 u4LastLinkQuality;
+	struct WIFI_LINK_QUALITY_INFO rLinkQualityInfo;
+	PARAM_GET_STA_STA_STATISTICS rQueryStaStatistics;
+	PARAM_802_11_STATISTICS_STRUCT_T rStat;
+	UINT_32 u4BufLen;
+#endif
+#ifdef CFG_SUPPORT_DATA_STALL
+	OS_SYSTIME tmReportinterval;
+#endif
+#ifdef CFG_SUPPORT_COEX_IOT_AP
+	BOOLEAN fgEnCts2Self;
+	UINT_8 ucPrevItem;
 #endif
 };				/* end of _ADAPTER_T */
 
@@ -1132,6 +1186,10 @@ struct _ADAPTER_T {
 
 #define IS_BSS_AIS(_prBssInfo) \
 	((_prBssInfo)->eNetworkType == NETWORK_TYPE_AIS)
+
+#define IS_BSS_INDEX_AIS(_prAdapter, _BssIndex) \
+	((IS_BSS_INDEX_VALID(_BssIndex) && \
+	IS_BSS_AIS(GET_BSS_INFO_BY_INDEX(_prAdapter, _BssIndex))))
 
 #define IS_BSS_P2P(_prBssInfo) \
 	((_prBssInfo)->eNetworkType == NETWORK_TYPE_P2P)

@@ -57,7 +57,7 @@
 #define MAX_PACKET_ALLOWED                2000
 
 
-static UINT32 gDbgLevel = UART_LOG_INFO;
+static INT32 gDbgLevel = UART_LOG_INFO;
 
 #define UART_PR_DBG(fmt, arg...)	\
 do { if (gDbgLevel >= UART_LOG_DBG)	\
@@ -116,7 +116,7 @@ UINT8 tx_buf[MTKSTP_BUFFER_SIZE] = { 0x0 };
 INT32 rd_idx;
 INT32 wr_idx;
 /* struct semaphore buf_mtx; */
-static spinlock_t buf_lock;
+spinlock_t buf_lock;
 static INT32 mtk_wcn_uart_tx(const PUINT8 data, const UINT32 size, PUINT32 written_size);
 
 

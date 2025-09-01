@@ -282,6 +282,10 @@ void nicTxInitialize(IN struct ADAPTER *prAdapter)
 #endif
 
 	prTxCtrl->i4PendingFwdFrameCount = 0;
+	prTxCtrl->i4PendingFwdFrameWMMCount[WMM_AC_BE_INDEX] = 0;
+	prTxCtrl->i4PendingFwdFrameWMMCount[WMM_AC_BK_INDEX] = 0;
+	prTxCtrl->i4PendingFwdFrameWMMCount[WMM_AC_VI_INDEX] = 0;
+	prTxCtrl->i4PendingFwdFrameWMMCount[WMM_AC_VO_INDEX] = 0;
 
 	/* Assign init value */
 	/* Tx sequence number */
@@ -1039,6 +1043,7 @@ uint8_t nicTxGetCmdResourceType(IN struct CMD_INFO
 		break;
 
 	case COMMAND_TYPE_SECURITY_FRAME:
+	case COMMAND_TYPE_DATA_FRAME:
 		ucTC = nicTxGetFrameResourceType(FRAME_TYPE_802_1X, NULL);
 		break;
 
@@ -1419,6 +1424,61 @@ void nicTxMsduQueueByPrio(struct ADAPTER *prAdapter)
 	}
 }
 
+#if CFG_SUPPORT_LOWLATENCY_MODE
+/*----------------------------------------------------------------------------*/
+/*!
+ * @brief In this function, we'll pick high priority packet to data queue
+ *
+ *
+ * @param prAdapter              Pointer to the Adapter structure.
+ * @param prDataPort             Pointer to data queue
+ *
+ */
+/*----------------------------------------------------------------------------*/
+static void nicTxMsduPickHighPrioPkt(struct ADAPTER *prAdapter,
+				     struct QUE *prDataPort0,
+				     struct QUE *prDataPort1)
+{
+	struct QUE *prDataPort, *prTxQue;
+	struct MSDU_INFO *prMsduInfo;
+	struct sk_buff *prSkb;
+	int32_t i4TcIdx;
+	uint32_t u4QSize, u4Idx;
+	uint8_t ucPortIdx;
+
+	for (i4TcIdx = TC_NUM; i4TcIdx >= 0; i4TcIdx--) {
+		prTxQue = &(prAdapter->rTxPQueue[i4TcIdx]);
+		u4QSize = prTxQue->u4NumElem;
+		for (u4Idx = 0; u4Idx < u4QSize; u4Idx++) {
+			QUEUE_REMOVE_HEAD(prTxQue, prMsduInfo,
+					  struct MSDU_INFO *);
+			if (!prMsduInfo || !prMsduInfo->prPacket) {
+				QUEUE_INSERT_TAIL(
+					prTxQue,
+					(struct QUE_ENTRY *)prMsduInfo);
+				continue;
+			}
+
+			ucPortIdx = halTxRingDataSelect(prAdapter, prMsduInfo);
+			prDataPort = (ucPortIdx == TX_RING_DATA1_IDX_1) ?
+				prDataPort1 : prDataPort0;
+
+			prSkb = prMsduInfo->prPacket;
+			if (prSkb->mark == NIC_TX_SKB_PRIORITY_MARK1 ||
+			    (prSkb->mark & BIT(NIC_TX_SKB_PRIORITY_MARK_BIT))) {
+				QUEUE_INSERT_TAIL(
+					prDataPort,
+					(struct QUE_ENTRY *)prMsduInfo);
+			} else {
+				QUEUE_INSERT_TAIL(
+					prTxQue,
+					(struct QUE_ENTRY *)prMsduInfo);
+			}
+		}
+	}
+}
+#endif /* CFG_SUPPORT_LOWLATENCY_MODE */
+
 /*----------------------------------------------------------------------------*/
 /*!
  * @brief In this function, we'll write MSDU into HIF by Round-Robin
@@ -1430,49 +1490,101 @@ void nicTxMsduQueueByPrio(struct ADAPTER *prAdapter)
 /*----------------------------------------------------------------------------*/
 void nicTxMsduQueueByRR(struct ADAPTER *prAdapter)
 {
-	struct QUE qDataPort;
-	struct QUE *prDataPort, *prTxQue;
+	struct WIFI_VAR *prWifiVar;
+	struct QUE qDataPort0, qDataPort1, arTempQue[TX_PORT_NUM];
+	struct QUE *prDataPort0, *prDataPort1, *prDataPort, *prTxQue;
 	struct MSDU_INFO *prMsduInfo;
-	bool fgIsAllQueneEmpty = false;
-	int32_t i;
+	uint32_t u4Idx, u4IsNotAllQueneEmpty;
+	uint8_t ucPortIdx;
+	uint32_t au4TxCnt[TX_PORT_NUM], u4Offset = 0;
+	char aucLogBuf[512];
 
 	KAL_SPIN_LOCK_DECLARATION();
 
-	prDataPort = &qDataPort;
-	QUEUE_INITIALIZE(prDataPort);
+	prWifiVar = &prAdapter->rWifiVar;
+	prDataPort0 = &qDataPort0;
+	prDataPort1 = &qDataPort1;
+	QUEUE_INITIALIZE(prDataPort0);
+	QUEUE_INITIALIZE(prDataPort1);
+	kalMemZero(aucLogBuf, 512);
+
+	for (u4Idx = 0; u4Idx < TX_PORT_NUM; u4Idx++) {
+		QUEUE_INITIALIZE(&arTempQue[u4Idx]);
+		au4TxCnt[u4Idx] = 0;
+	}
 
 	KAL_ACQUIRE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
-	/* Dequeue each TCQ to dataQ by round-robin  */
+
+#if CFG_SUPPORT_LOWLATENCY_MODE
+	/* Dequeue each TCQ to dataQ, high priority packet first */
+	if (prWifiVar->ucLowLatencyPacketPriority & BIT(1))
+		nicTxMsduPickHighPrioPkt(prAdapter, prDataPort0, prDataPort1);
+#endif /* CFG_SUPPORT_LOWLATENCY_MODE */
+
+	/* Dequeue each TCQ to dataQ by round-robin with resource control */
 	/* Check each TCQ is empty or not */
-	while (!fgIsAllQueneEmpty) {
-		fgIsAllQueneEmpty = true;
-		for (i = TC_NUM; i >= 0; i--) {
-			prTxQue = &(prAdapter->rTxPQueue[i]);
-			if (QUEUE_IS_NOT_EMPTY(prTxQue)) {
-				QUEUE_REMOVE_HEAD(
-					prTxQue, prMsduInfo,
-					struct MSDU_INFO *);
-				if (prMsduInfo == NULL)
-					continue;
-				QUEUE_INSERT_TAIL(
-					prDataPort,
-					(struct QUE_ENTRY *)prMsduInfo);
-				fgIsAllQueneEmpty = false;
-			}
+	u4IsNotAllQueneEmpty = BITS(0, TC_NUM);
+	while (u4IsNotAllQueneEmpty) {
+		u4Idx = prAdapter->u4TxHifResCtlIdx;
+		prTxQue = &(prAdapter->rTxPQueue[u4Idx]);
+		if (QUEUE_IS_NOT_EMPTY(prTxQue)) {
+			QUEUE_REMOVE_HEAD(prTxQue, prMsduInfo,
+					  struct MSDU_INFO *);
+			if (prMsduInfo == NULL)
+				continue;
+			ucPortIdx = halTxRingDataSelect(prAdapter, prMsduInfo);
+			prDataPort = (ucPortIdx == TX_RING_DATA1_IDX_1) ?
+				prDataPort1 : prDataPort0;
+			QUEUE_INSERT_TAIL(prDataPort,
+					  (struct QUE_ENTRY *) prMsduInfo);
+			au4TxCnt[u4Idx]++;
+		} else {
+			/* unset empty queue */
+			u4IsNotAllQueneEmpty &= ~BIT(u4Idx);
+		}
+		prAdapter->u4TxHifResCtlNum++;
+		if (prAdapter->u4TxHifResCtlNum >=
+		    prAdapter->au4TxHifResCtl[u4Idx]) {
+			prAdapter->u4TxHifResCtlIdx++;
+			prAdapter->u4TxHifResCtlIdx %= TX_PORT_NUM;
+			prAdapter->u4TxHifResCtlNum = 0;
+		}
+	}
+
+	KAL_RELEASE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
+
+	nicTxMsduQueue(prAdapter, 0, prDataPort0);
+	nicTxMsduQueue(prAdapter, 0, prDataPort1);
+
+	KAL_ACQUIRE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
+	/* Enque from dataQ to TCQ if TX don't finish */
+	/* Need to reverse dataQ by TC first */
+	while (QUEUE_IS_NOT_EMPTY(prDataPort0)) {
+		QUEUE_REMOVE_HEAD(prDataPort0, prMsduInfo, struct MSDU_INFO *);
+		QUEUE_INSERT_HEAD(&arTempQue[prMsduInfo->ucTC],
+			(struct QUE_ENTRY *) prMsduInfo);
+	}
+	while (QUEUE_IS_NOT_EMPTY(prDataPort1)) {
+		QUEUE_REMOVE_HEAD(prDataPort1, prMsduInfo, struct MSDU_INFO *);
+		QUEUE_INSERT_HEAD(&arTempQue[prMsduInfo->ucTC],
+			(struct QUE_ENTRY *) prMsduInfo);
+	}
+	for (u4Idx = 0; u4Idx < TX_PORT_NUM; u4Idx++) {
+		while (QUEUE_IS_NOT_EMPTY(&arTempQue[u4Idx])) {
+			QUEUE_REMOVE_HEAD(&arTempQue[u4Idx], prMsduInfo,
+					  struct MSDU_INFO *);
+			QUEUE_INSERT_HEAD(&prAdapter->rTxPQueue[u4Idx],
+					  (struct QUE_ENTRY *) prMsduInfo);
 		}
 	}
 	KAL_RELEASE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
 
-	nicTxMsduQueue(prAdapter, 0, prDataPort);
-
-	KAL_ACQUIRE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
-	/* Enque from dataQ to TCQ if TX don't finish */
-	while (QUEUE_IS_NOT_EMPTY(prDataPort)) {
-		QUEUE_REMOVE_HEAD(prDataPort, prMsduInfo, struct MSDU_INFO *);
-		prTxQue = &(prAdapter->rTxPQueue[prMsduInfo->ucTC]);
-		QUEUE_INSERT_HEAD(prTxQue, (struct QUE_ENTRY *) prMsduInfo);
+	for (u4Idx = 0; u4Idx < TX_PORT_NUM; u4Idx++) {
+		u4Offset += snprintf(
+			aucLogBuf + u4Offset, 512 - u4Offset,
+			"TC[%u]:%u ", u4Idx, au4TxCnt[u4Idx]);
 	}
-	KAL_RELEASE_SPIN_LOCK(prAdapter, SPIN_LOCK_TX_PORT_QUE);
+	DBGLOG_LIMITED(NIC, LOUD, "%s\n", aucLogBuf);
 }
 
 uint32_t nicTxGetMsduPendingCnt(IN struct ADAPTER
@@ -1529,6 +1641,9 @@ nicTxComposeDesc(IN struct ADAPTER *prAdapter,
 	uint8_t ucTarPort, ucTarQueue;
 	struct mt66xx_chip_info *prChipInfo;
 
+#if ((CFG_SISO_SW_DEVELOP == 1) || (CFG_SUPPORT_SPE_IDX_CONTROL == 1))
+	enum ENUM_WF_PATH_FAVOR_T eWfPathFavor;
+#endif
 	prTxDesc = (struct HW_MAC_TX_DESC *) prTxDescBuffer;
 	prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter,
 					  prMsduInfo->ucBssIndex);
@@ -1586,7 +1701,7 @@ nicTxComposeDesc(IN struct ADAPTER *prAdapter,
 	DBGLOG(RSN, INFO,
 	       "Tx WlanIndex = %d eAuthMode = %d\n",
 	       prMsduInfo->ucWlanIndex,
-	       prAdapter->rWifiVar.rConnSettings.eAuthMode);
+	       aisGetAuthMode(prAdapter, prMsduInfo->ucBssIndex));
 #endif
 	HAL_MAC_TX_DESC_SET_WLAN_INDEX(prTxDesc,
 				       prMsduInfo->ucWlanIndex);
@@ -1712,10 +1827,12 @@ nicTxComposeDesc(IN struct ADAPTER *prAdapter,
 	case MSDU_RATE_MODE_MANUAL_DESC:
 		HAL_MAC_TX_DESC_SET_DW(prTxDesc, 6, 1,
 				       &prMsduInfo->u4FixedRateOption);
-#if CFG_SISO_SW_DEVELOP
+#if ((CFG_SISO_SW_DEVELOP == 1) || (CFG_SUPPORT_SPE_IDX_CONTROL == 1))
 		/* Update spatial extension index setting */
+		eWfPathFavor = wlanGetAntPathType(prAdapter, ENUM_WF_NON_FAVOR);
 		HAL_MAC_TX_DESC_SET_SPE_IDX(prTxDesc,
-			wlanGetSpeIdx(prAdapter, prBssInfo->ucBssIndex));
+			wlanGetSpeIdx(prAdapter, prBssInfo->ucBssIndex,
+				eWfPathFavor));
 #endif
 		HAL_MAC_TX_DESC_SET_FIXED_RATE_MODE_TO_DESC(prTxDesc);
 		HAL_MAC_TX_DESC_SET_FIXED_RATE_ENABLE(prTxDesc);
@@ -1915,18 +2032,20 @@ nicTxFillDesc(IN struct ADAPTER *prAdapter,
 				      prStaRec)) {
 		prTxDescTemplate =
 			prStaRec->aprTxDescTemplate[prMsduInfo->ucUserPriority];
-
+	}
+	if (prTxDescTemplate) {
 		if (prMsduInfo->ucPacketType == TX_PACKET_TYPE_DATA)
 			kalMemCopy(prTxDesc, prTxDescTemplate,
 				u4TxDescLength + prChipInfo->txd_append_size);
 		else
 			kalMemCopy(prTxDesc, prTxDescTemplate, u4TxDescLength);
-
 		/* Overwrite fields for EOSP or More data */
 		nicTxFillDescByPktOption(prMsduInfo, prTxDesc);
-	}
-	/* Compose TXD by Msdu info */
-	else {
+	} else { /* Compose TXD by Msdu info */
+        //#ifndef ODM_WT_EDIT
+        //Fanghua.Zhu@ODM_WT.BSP.CONN.WIFI.BugID2628224, 2020/01/08, Modify for reduce reduce wifi kernel log print.
+		DBGLOG_LIMITED(NIC, TRACE, "Compose TXD by Msdu info\n");
+        //#endif /* ODM_WT_EDIT */
 #if (UNIFIED_MAC_TX_FORMAT == 1)
 		if (prMsduInfo->eSrc == TX_PACKET_MGMT)
 			prMsduInfo->ucPacketFormat = TXD_PKT_FORMAT_COMMAND;
@@ -1941,7 +2060,6 @@ nicTxFillDesc(IN struct ADAPTER *prAdapter,
 			nicTxComposeDescAppend(prAdapter, prMsduInfo,
 					       prTxDescBuffer + u4TxDescLength);
 	}
-
 	/*
 	 * --------------------------------------------------------------------
 	 * Fill up remaining parts, per-packet variant fields
@@ -1994,6 +2112,9 @@ nicTxFillDataDesc(IN struct ADAPTER *prAdapter,
 				prChipInfo->txd_append_size);
 
 	nicTxFillDesc(prAdapter, prMsduInfo, pucOutputBuf, NULL);
+	/* dump TXD to debug TX issue */
+	if (prAdapter->rWifiVar.ucDataTxDone == 1)
+		halDumpTxdInfo(prAdapter, (uint32_t *)pucOutputBuf);
 }
 
 void
@@ -2358,6 +2479,9 @@ uint32_t nicTxMsduQueue(IN struct ADAPTER *prAdapter,
 	while (QUEUE_IS_NOT_EMPTY(prQue)) {
 		QUEUE_REMOVE_HEAD(prQue, prMsduInfo, struct MSDU_INFO *);
 
+		if (prMsduInfo == NULL)
+			continue;
+
 		if (!halTxIsDataBufEnough(prAdapter, prMsduInfo)) {
 			QUEUE_INSERT_HEAD(prQue,
 				(struct QUE_ENTRY *) prMsduInfo);
@@ -2392,8 +2516,11 @@ uint32_t nicTxMsduQueue(IN struct ADAPTER *prAdapter,
 			wlanTxLifetimeTagPacket(prAdapter, prMsduInfo,
 						TX_PROF_TAG_DRV_TX_DONE);
 
+		if (!prMsduInfo->prPacket)
+			continue;
+#if (CFG_SUPPORT_STATISTICS == 1)
 		StatsEnvTxTime2Hif(prAdapter, prMsduInfo);
-
+#endif
 		HAL_WRITE_TX_DATA(prAdapter, prMsduInfo);
 	}
 
@@ -2432,8 +2559,14 @@ uint32_t nicTxCmd(IN struct ADAPTER *prAdapter,
 	wlanTraceTxCmd(prCmdInfo);
 #endif
 
-	if (prCmdInfo->eCmdType == COMMAND_TYPE_SECURITY_FRAME) {
+	if (prCmdInfo->eCmdType == COMMAND_TYPE_SECURITY_FRAME ||
+		prCmdInfo->eCmdType == COMMAND_TYPE_DATA_FRAME) {
 		prMsduInfo = prCmdInfo->prMsduInfo;
+
+		/* dump TXD to debug TX issue */
+		if (prAdapter->rWifiVar.ucDataTxDone == 3)
+			halDumpTxdInfo(prAdapter,
+				(uint32_t *)prMsduInfo->aucTxDescBuffer);
 
 		prCmdInfo->pucTxd = prMsduInfo->aucTxDescBuffer;
 		if (HAL_MAC_TX_DESC_IS_LONG_FORMAT((struct HW_MAC_TX_DESC *)
@@ -2449,6 +2582,13 @@ uint32_t nicTxCmd(IN struct ADAPTER *prAdapter,
 		HAL_WRITE_TX_CMD(prAdapter, prCmdInfo, ucTC);
 
 		prMsduInfo->prPacket = NULL;
+
+		DBGLOG_LIMITED(INIT, TRACE,
+		       "TX Data Frame: BSS[%u] WIDX:PID[%u:%u] SEQ[%u] STA[%u] RSP[%u]\n",
+		       prMsduInfo->ucBssIndex, prMsduInfo->ucWlanIndex,
+		       prMsduInfo->ucPID,
+		       prMsduInfo->ucTxSeqNum, prMsduInfo->ucStaRecIndex,
+		       prMsduInfo->pfTxDoneHandler ? TRUE : FALSE);
 
 		if (prMsduInfo->pfTxDoneHandler) {
 			KAL_ACQUIRE_SPIN_LOCK(prAdapter,
@@ -2471,6 +2611,11 @@ uint32_t nicTxCmd(IN struct ADAPTER *prAdapter,
 
 		ASSERT(prMsduInfo->fgIs802_11 == TRUE);
 		ASSERT(prMsduInfo->eSrc == TX_PACKET_MGMT);
+
+		/* dump TXD to debug TX issue */
+		if (prAdapter->rWifiVar.ucDataTxDone == 3)
+			halDumpTxdInfo(prAdapter,
+				(uint32_t *)prMsduInfo->aucTxDescBuffer);
 
 		prCmdInfo->pucTxd = prMsduInfo->aucTxDescBuffer;
 		if (HAL_MAC_TX_DESC_IS_LONG_FORMAT((struct HW_MAC_TX_DESC *)
@@ -2673,6 +2818,9 @@ void nicTxFreePacket(IN struct ADAPTER *prAdapter,
 			cnmMemFree(prAdapter, prNativePacket);
 	} else if (prMsduInfo->eSrc == TX_PACKET_FORWARDING) {
 		GLUE_DEC_REF_CNT(prTxCtrl->i4PendingFwdFrameCount);
+		GLUE_DEC_REF_CNT(prTxCtrl
+			->i4PendingFwdFrameWMMCount[
+			aucACI2TxQIdx[aucTid2ACI[prMsduInfo->ucUserPriority]]]);
 	}
 }
 
@@ -3144,6 +3292,92 @@ uint32_t nicTxInitResetResource(IN struct ADAPTER
 
 #endif
 
+/*----------------------------------------------------------------------------*/
+/*!
+ * \brief Handle data packet that will send to firmware
+ *
+ *
+ * @param prAdapter      Pointer to the Adapter structure.
+ * @param prMsduInfo     Pointer of MSDU_INFO
+ *
+ * @retval TRUE   Process success.
+ */
+/*----------------------------------------------------------------------------*/
+u_int8_t nicTxProcessCmdDataPacket(IN struct ADAPTER *prAdapter,
+			       IN struct MSDU_INFO *prMsduInfo)
+{
+	struct BSS_INFO *prBssInfo;
+	struct STA_RECORD *prStaRec;
+	struct HW_MAC_TX_DESC *prTxDesc;
+
+	/* Sanity check */
+	if (!prMsduInfo->prPacket) {
+		DBGLOG_LIMITED(TX, WARN, "MSDU prPacket is null\n");
+		return FALSE;
+	}
+
+	if (!prMsduInfo->u2FrameLength) {
+		DBGLOG_LIMITED(TX, WARN, "MSDU u2FrameLength is 0\n");
+		return FALSE;
+	}
+
+	if (!prMsduInfo->ucMacHeaderLength) {
+		DBGLOG_LIMITED(TX, WARN, "MSDU ucMacHeaderLength is 0\n");
+		return FALSE;
+	}
+
+	prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter,
+					  prMsduInfo->ucBssIndex);
+	prStaRec = cnmGetStaRecByIndex(prAdapter,
+				       prMsduInfo->ucStaRecIndex);
+
+	/* MMPDU: force stick to TC4 */
+	prMsduInfo->ucTC = TC4_INDEX;
+
+	/* No Tx descriptor template for MMPDU */
+	prMsduInfo->fgIsTXDTemplateValid = FALSE;
+
+	/* Set packet type to data to fill correct TxD */
+	prMsduInfo->ucPacketType = TX_PACKET_TYPE_DATA;
+
+#if CFG_SUPPORT_MULTITHREAD
+	nicTxFillDesc(prAdapter, prMsduInfo,
+		      prMsduInfo->aucTxDescBuffer, NULL);
+#endif
+
+	/*
+	 * Adjust TxD for command data after fill description
+	 */
+	prTxDesc = (struct HW_MAC_TX_DESC *) prMsduInfo->aucTxDescBuffer;
+
+	/* (1) Force set packet format to command for command data*/
+#if (UNIFIED_MAC_TX_FORMAT == 1)
+	HAL_MAC_TX_DESC_SET_PKT_FORMAT(prTxDesc,
+					TXD_PKT_FORMAT_COMMAND);
+#endif
+
+	/* (2) Set remaining TX time to no limit as cut-through data.
+	 * Not use arTcTrafficSettings[TC4_INDEX].u4RemainingTxTime;
+	 */
+	if (!(prMsduInfo->u4Option & MSDU_OPT_MANUAL_LIFE_TIME))
+		prMsduInfo->u4RemainingLifetime = TX_DESC_TX_TIME_NO_LIMIT;
+	HAL_MAC_TX_DESC_SET_REMAINING_LIFE_TIME_IN_MS(prTxDesc,
+			prMsduInfo->u4RemainingLifetime);
+
+
+	/* (3) If prMsduInfo->pfTxDoneHandler is not set (ie. PID is not set)
+	 * Still set PID for command data packet for firmware usage. Driver
+	 * does not handle EVENT_ID_TX_DONE in this case
+	 */
+	if (prMsduInfo->ucPID < NIC_TX_DESC_DRIVER_PID_MIN) {
+		prMsduInfo->ucPID = nicTxAssignPID(prAdapter,
+					   prMsduInfo->ucWlanIndex);
+		HAL_MAC_TX_DESC_SET_PID(prTxDesc, prMsduInfo->ucPID);
+	}
+
+	return TRUE;
+}
+
 u_int8_t nicTxProcessMngPacket(IN struct ADAPTER *prAdapter,
 			       IN struct MSDU_INFO *prMsduInfo)
 {
@@ -3213,9 +3447,6 @@ void nicTxProcessTxDoneEvent(IN struct ADAPTER *prAdapter,
 		(uint8_t *)"80", (uint8_t *)"160/80+80"};
 
 	prTxDone = (struct EVENT_TX_DONE *) (prEvent->aucBuffer);
-
-	if (prTxDone->ucStatus == 0)
-		GET_CURRENT_SYSTIME(&prTxCtrl->u4LastTxTime);
 
 	if (prTxDone->ucFlag & BIT(TXS_WITH_ADVANCED_INFO)) {
 		/* Tx Done with advanced info */
@@ -3355,6 +3586,12 @@ void nicTxProcessTxDoneEvent(IN struct ADAPTER *prAdapter,
 			nicTxFreePacket(prAdapter, prMsduInfo, FALSE);
 			nicTxReturnMsduInfo(prAdapter, prMsduInfo);
 		}
+
+		if (prTxDone->ucStatus == 0 &&
+			prMsduInfo->ucBssIndex < MAX_BSSID_NUM)
+			GET_CURRENT_SYSTIME(
+				&prTxCtrl->u4LastTxTime
+				[prMsduInfo->ucBssIndex]);
 	}
 }
 
@@ -3432,7 +3669,18 @@ uint32_t nicTxEnqueueMsdu(IN struct ADAPTER *prAdapter,
 		prRetMsduInfo = qmEnqueueTxPackets(prAdapter,
 			(struct MSDU_INFO *) QUEUE_GET_HEAD(prDataPort0));
 		KAL_RELEASE_SPIN_LOCK(prAdapter, SPIN_LOCK_QM_TX_QUEUE);
-
+#if ARP_MONITER_ENABLE
+		if (prRetMsduInfo && prAdapter->fgArpNoResponse) {
+			prAdapter->fgArpNoResponse = FALSE;
+			aisBssBeaconTimeout(prAdapter,
+				prRetMsduInfo->ucBssIndex);
+#if CFG_SUPPORT_DATA_STALL
+			KAL_REPORT_ERROR_EVENT(prAdapter,
+				EVENT_ARP_NO_RESPONSE,
+				(uint16_t)sizeof(uint32_t), FALSE);
+#endif /* CFG_SUPPORT_DATA_STALL */
+		}
+#endif /* ARP_MONITER_ENABLE */
 		/* post-process for dropped packets */
 		if (prRetMsduInfo) {	/* unable to enqueue */
 			nicTxFreeMsduInfoPacket(prAdapter, prRetMsduInfo);
@@ -3665,6 +3913,7 @@ uint32_t nicTxGetCmdPageCount(IN struct ADAPTER *prAdapter,
 
 	case COMMAND_TYPE_SECURITY_FRAME:
 	case COMMAND_TYPE_MANAGEMENT_FRAME:
+	case COMMAND_TYPE_DATA_FRAME:
 		/* No TxD append field for management packet */
 		u4PageCount = nicTxGetPageCount(prAdapter,
 			prCmdInfo->u2InfoBufLen +
@@ -3691,6 +3940,7 @@ void nicTxSetMngPacket(struct ADAPTER *prAdapter,
 		       PFN_TX_DONE_HANDLER pfTxDoneHandler,
 		       uint8_t ucRateMode)
 {
+	static uint16_t u2SwSn;
 	ASSERT(prMsduInfo);
 
 	prMsduInfo->ucBssIndex = ucBssIndex;
@@ -3713,6 +3963,10 @@ void nicTxSetMngPacket(struct ADAPTER *prAdapter,
 	prMsduInfo->ucPacketType = TX_PACKET_TYPE_MGMT;
 	prMsduInfo->ucUserPriority = 0;
 	prMsduInfo->eSrc = TX_PACKET_MGMT;
+	u2SwSn++;
+	if (u2SwSn > 4095)
+		u2SwSn = 0;
+	nicTxSetPktSequenceNumber(prMsduInfo, u2SwSn);
 }
 
 void nicTxSetDataPacket(struct ADAPTER *prAdapter,
@@ -4461,6 +4715,8 @@ static void nicTxDirectCheckStaPsQ(IN struct ADAPTER
 				QUEUE_REMOVE_HEAD(
 					&prAdapter->rStaPsQueue[ucStaRecIndex],
 					prQueueEntry, struct QUE_ENTRY *);
+				if (prQueueEntry == NULL)
+					break;
 				prMsduInfo = (struct MSDU_INFO *) prQueueEntry;
 			} else {
 				break;
@@ -4625,7 +4881,8 @@ static uint32_t nicTxDirectStartXmitMain(struct sk_buff
 
 	QUEUE_INITIALIZE(prProcessingQue);
 
-	ucActivedTspec = wmmHasActiveTspec(&prAdapter->rWifiVar.rWmmInfo);
+	ucActivedTspec =
+		wmmHasActiveTspec(aisGetWMMInfo(prAdapter, ucBssIndex));
 
 	if (prSkb) {
 		nicTxFillMsduInfo(prAdapter, prMsduInfo, prSkb);
@@ -4833,33 +5090,34 @@ static uint32_t nicTxDirectStartXmitMain(struct sk_buff
 	}
 
 	while (1) {
-		if (!halTxIsDataBufEnough(prAdapter, prMsduInfo)) {
-			QUEUE_INSERT_HEAD(
-				&prAdapter->rTxDirectHifQueue[ucHifTc],
-				(struct QUE_ENTRY *) prMsduInfo);
-			mod_timer(&prAdapter->rTxDirectHifTimer,
-				  jiffies + TX_DIRECT_CHECK_INTERVAL);
+		if (prMsduInfo != NULL) {
+			if (!halTxIsDataBufEnough(prAdapter, prMsduInfo)) {
+				QUEUE_INSERT_HEAD(
+					&prAdapter->rTxDirectHifQueue[ucHifTc],
+					(struct QUE_ENTRY *) prMsduInfo);
+				mod_timer(&prAdapter->rTxDirectHifTimer,
+					  jiffies + TX_DIRECT_CHECK_INTERVAL);
 
-			return WLAN_STATUS_SUCCESS;
+				return WLAN_STATUS_SUCCESS;
+			}
+
+			if (prMsduInfo->pfTxDoneHandler) {
+				KAL_SPIN_LOCK_DECLARATION();
+
+				/* Record native packet ptr for Tx done log */
+				WLAN_GET_FIELD_32(&prMsduInfo->prPacket,
+						  &prMsduInfo->u4TxDoneTag);
+
+				KAL_ACQUIRE_SPIN_LOCK(prAdapter,
+					SPIN_LOCK_TXING_MGMT_LIST);
+				QUEUE_INSERT_TAIL(
+					&(prAdapter->rTxCtrl.rTxMgmtTxingQueue),
+					(struct QUE_ENTRY *) prMsduInfo);
+				KAL_RELEASE_SPIN_LOCK(prAdapter,
+					SPIN_LOCK_TXING_MGMT_LIST);
+			}
+			HAL_WRITE_TX_DATA(prAdapter, prMsduInfo);
 		}
-
-		if (prMsduInfo->pfTxDoneHandler) {
-			KAL_SPIN_LOCK_DECLARATION();
-
-			/* Record native packet pointer for Tx done log */
-			WLAN_GET_FIELD_32(&prMsduInfo->prPacket,
-					  &prMsduInfo->u4TxDoneTag);
-
-			KAL_ACQUIRE_SPIN_LOCK(prAdapter,
-				SPIN_LOCK_TXING_MGMT_LIST);
-			QUEUE_INSERT_TAIL(
-				&(prAdapter->rTxCtrl.rTxMgmtTxingQueue),
-				(struct QUE_ENTRY *) prMsduInfo);
-			KAL_RELEASE_SPIN_LOCK(prAdapter,
-				SPIN_LOCK_TXING_MGMT_LIST);
-		}
-		HAL_WRITE_TX_DATA(prAdapter, prMsduInfo);
-
 		if (QUEUE_IS_NOT_EMPTY(
 			    &prAdapter->rTxDirectHifQueue[ucHifTc])) {
 			QUEUE_REMOVE_HEAD(

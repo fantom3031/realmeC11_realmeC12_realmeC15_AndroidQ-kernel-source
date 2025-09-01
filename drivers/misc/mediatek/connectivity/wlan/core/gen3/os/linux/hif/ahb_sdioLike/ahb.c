@@ -71,6 +71,8 @@ static int HifAhbBusCntGet(VOID);
 
 static int HifAhbBusCntClr(VOID);
 
+static int HifAhbIsWifiDrvOwn(VOID);
+
 static int HifTxCnt;
 
 #if (CONF_HIF_DEV_MISC == 1)
@@ -294,7 +296,11 @@ VOID glSetHifInfo(GLUE_INFO_T *GlueInfo, ULONG ulCookie)
 	    of_property_read_u32_index(HifInfo->Dev->of_node, "reg", 1, &val)) {
 		DBGLOG(INIT, ERROR, "Failed to get WIFI-HIF base addr from DT!! Tx/Rx maybe abnormal!!\n");
 	}
+#if __BITS_PER_LONG == 32
+	HifInfo->HifRegPhyBase = (ULONG)val;
+#else
 	HifInfo->HifRegPhyBase = (((ULONG)val_h << 16) << 16) | (ULONG)val;
+#endif
 	HifInfo->InfraRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 2);
 	HifInfo->ConnCfgRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 3);
 #else
@@ -308,7 +314,7 @@ VOID glSetHifInfo(GLUE_INFO_T *GlueInfo, ULONG ulCookie)
 #endif
 	g_pHifRegBaseAddr = &(HifInfo->HifRegBaseAddr);
 
-	DBGLOG(INIT, TRACE, "HifRegBaseAddr = %p, HifRegPhyBase = 0x%lx\n",
+	DBGLOG(INIT, INFO, "HifRegBaseAddr = %p, HifRegPhyBase = 0x%lx\n",
 	       HifInfo->HifRegBaseAddr, HifInfo->HifRegPhyBase);
 
 	/* default disable DMA */
@@ -1195,6 +1201,20 @@ static int hifAhbSetMpuProtect(BOOLEAN enable)
 
 /*----------------------------------------------------------------------------*/
 /*!
+* \brief This function check the status of wifi driver
+*
+* \param[in] None
+*
+* \return 1: drv_own, 0: fw_own
+*/
+/*----------------------------------------------------------------------------*/
+static int HifAhbIsWifiDrvOwn(VOID)
+{
+	return (wlanIsFwOwn() == FALSE) ? 1 : 0;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
 * \brief This function configs the DMA TX/RX settings before any real TX/RX.
 *
 * \param[in] GlueInfo       Pointer to the GLUE_INFO_T structure.
@@ -1267,6 +1287,7 @@ static int HifAhbPltmProbe(IN struct platform_device *pDev)
 	rWmtCb.wlan_bus_cnt_get_cb = HifAhbBusCntGet;
 	rWmtCb.wlan_bus_cnt_clr_cb = HifAhbBusCntClr;
 	rWmtCb.wlan_emi_mpu_set_protection_cb = hifAhbSetMpuProtect;
+	rWmtCb.wlan_is_wifi_drv_own_cb = HifAhbIsWifiDrvOwn;
 	mtk_wcn_wmt_wlan_reg(&rWmtCb);
 
 	return 0;
@@ -1359,12 +1380,26 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	UINT_32 val;
 	UINT_32 u4InfraPseOffset = 0x0394;
 
-	DBGLOG(RX, ERROR,
-	       "HIF_DBGCR02: 0x%08x, HIF_DBGCR08: 0x%08x\n",
-	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
-				CONN_HIF_DBGCR02),
-	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
-				CONN_HIF_DBGCR08));
+	DBGLOG(HAL, ERROR, "HIF_DBGCR00:0x%08X HIF_DBGCR01:0x%08X\n",
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR00),
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR01));
+	DBGLOG(HAL, ERROR, "HIF_DBGCR02:0x%08X HIF_DBGCR04:0x%08X\n",
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR02),
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR04));
+	DBGLOG(HAL, ERROR, "HIF_DBGCR08:0x%08X HIF_DBGCR10:0x%08X\n",
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR08),
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR10));
+	DBGLOG(HAL, ERROR, "HIF_DBGCR11:0x%08X HIF_DBGCR12:0x%08X\n",
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR11),
+		CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+			CONN_HIF_DBGCR12));
 
 	/* SET INFRA AO REMAPPING PSE Client REG according to Chip ID */
 	switch (u2ChipID) {
@@ -1380,7 +1415,7 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 		u4InfraPseOffset = 0x0394;
 		break;
 	default:
-		DBGLOG(RX, WARN, "Using default offset 0x%04x for chip id 0x%04x\n",
+		DBGLOG(HAL, WARN, "Using default offset 0x%04x for chip id 0x%04x\n",
 		       u4InfraPseOffset, u2ChipID);
 		break;
 	}
@@ -1397,19 +1432,15 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	val = 0x6;
 	CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 			  CONN_REMAP_PSE_CLIENT_DBGCR, val);
-	DBGLOG(RX, ERROR,
+	DBGLOG(HAL, ERROR,
 	       "PSE Client debug CR: 0x%08x\n",
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 				CONN_REMAP_PSE_CLIENT_DBGCR));
-	DBGLOG(RX, ERROR,
-	       "CONN_HIF_DBGCR12: 0x%08x\n",
-	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
-				CONN_HIF_DBGCR12));
 
 	val = 0x3;
 	CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 			  CONN_REMAP_PSE_CLIENT_DBGCR, val);
-	DBGLOG(RX, ERROR,
+	DBGLOG(HAL, ERROR,
 	       "PSE Client debug CR: 0x%08x\n",
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 				CONN_REMAP_PSE_CLIENT_DBGCR));
@@ -1417,7 +1448,7 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	val = 0x4;
 	CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 			  CONN_REMAP_PSE_CLIENT_DBGCR, val);
-	DBGLOG(RX, ERROR,
+	DBGLOG(HAL, ERROR,
 	       "PSE Client debug CR: 0x%08x\n",
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 				CONN_REMAP_PSE_CLIENT_DBGCR));
@@ -1425,7 +1456,7 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	val = 0x12;
 	CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 			  CONN_REMAP_PSE_CLIENT_DBGCR, val);
-	DBGLOG(RX, ERROR,
+	DBGLOG(HAL, ERROR,
 	       "PSE Client debug CR: 0x%08x\n",
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 				CONN_REMAP_PSE_CLIENT_DBGCR));
@@ -1433,7 +1464,7 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	val = 0x17;
 	CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 			  CONN_REMAP_PSE_CLIENT_DBGCR, val);
-	DBGLOG(RX, ERROR,
+	DBGLOG(HAL, ERROR,
 	       "PSE Client debug CR: 0x%08x\n",
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.ConnCfgRegBaseAddr,
 				CONN_REMAP_PSE_CLIENT_DBGCR));

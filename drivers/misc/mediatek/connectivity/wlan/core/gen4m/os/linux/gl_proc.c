@@ -77,6 +77,7 @@
 #include "wlan_lib.h"
 #include "debug.h"
 #include "wlan_oid.h"
+#include <linux/rtc.h>
 
 /*******************************************************************************
  *                              C O N S T A N T S
@@ -87,8 +88,8 @@
 
 #if CFG_SUPPORT_DEBUG_FS
 #define PROC_ROAM_PARAM							"roam_param"
-#define PROC_COUNTRY							"country"
 #endif
+#define PROC_COUNTRY							"country"
 #define PROC_DRV_STATUS                         "status"
 #define PROC_RX_STATISTICS                      "rx_statistics"
 #define PROC_TX_STATISTICS                      "tx_statistics"
@@ -372,14 +373,14 @@ static ssize_t procCfgRead(struct file *filp, char __user *buf, size_t count,
 			       "Dump configuration error: temp offset=%d, buf length=%u, key[%d]=[%u], val[%d]=[%u]\n",
 			       (int)(temp - g_aucProcBuf),
 			       (unsigned int)kalStrLen(g_aucProcBuf),
-			       WLAN_CFG_VALUE_LEN_MAX,
+			       WLAN_CFG_KEY_LEN_MAX,
 			       (unsigned int)prWlanCfgEntry->aucKey[
-				WLAN_CFG_VALUE_LEN_MAX - 1],
+				WLAN_CFG_KEY_LEN_MAX - 1],
 			       WLAN_CFG_VALUE_LEN_MAX,
 			       (unsigned int)prWlanCfgEntry->aucValue[
 				WLAN_CFG_VALUE_LEN_MAX - 1]);
 			kalMemSet(g_aucProcBuf, ' ', u4StrLen);
-			kalStrnCpy(g_aucProcBuf, str2, kalStrLen(str2));
+			kalStrnCpy(g_aucProcBuf, str2, kalStrLen(str2) + 1);
 			g_aucProcBuf[u4StrLen-1] = '\n';
 			goto procCfgReadLabel;
 		}
@@ -404,14 +405,14 @@ static ssize_t procCfgRead(struct file *filp, char __user *buf, size_t count,
 			       "D:Dump configuration error: temp offset=%u, buf length=%u, key[%d]=[%u], val[%d]=[%u]\n",
 			       (int)(temp - g_aucProcBuf),
 			       (unsigned int)kalStrLen(g_aucProcBuf),
-			       WLAN_CFG_VALUE_LEN_MAX,
+			       WLAN_CFG_KEY_LEN_MAX,
 			       (unsigned int)prWlanCfgEntry->aucKey[
-				WLAN_CFG_VALUE_LEN_MAX - 1],
+				WLAN_CFG_KEY_LEN_MAX - 1],
 			       WLAN_CFG_VALUE_LEN_MAX,
 			       (unsigned int)prWlanCfgEntry->aucValue[
 				WLAN_CFG_VALUE_LEN_MAX - 1]);
 			kalMemSet(g_aucProcBuf, ' ', u4StrLen);
-			kalStrnCpy(g_aucProcBuf, str2, kalStrLen(str2));
+			kalStrnCpy(g_aucProcBuf, str2, kalStrLen(str2) + 1);
 			g_aucProcBuf[u4StrLen-1] = '\n';
 			goto procCfgReadLabel;
 		}
@@ -437,15 +438,23 @@ procCfgReadLabel:
 static ssize_t procCfgWrite(struct file *file, const char __user *buffer,
 	size_t count, loff_t *data)
 {
-
-	/*      uint32_t u4DriverCmd, u4DriverValue;
-	 *uint8_t *temp = &g_aucProcBuf[0];
-	 */
 	uint32_t u4CopySize = sizeof(g_aucProcBuf)-8;
 	struct GLUE_INFO *prGlueInfo;
 	uint8_t *pucTmp;
-	/* PARAM_CUSTOM_P2P_SET_STRUCT_T rSetP2P; */
 	uint32_t i = 0;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);
@@ -521,12 +530,21 @@ static ssize_t procDriverCmdRead(struct file *filp, char __user *buf,
 static ssize_t procDriverCmdWrite(struct file *file, const char __user *buffer,
 	size_t count, loff_t *data)
 {
-/*	UINT_32 u4DriverCmd, u4DriverValue;
- *	UINT_8 *temp = &g_aucProcBuf[0];
- */
 	uint32_t u4CopySize = sizeof(g_aucProcBuf);
 	struct GLUE_INFO *prGlueInfo;
-/*	PARAM_CUSTOM_P2P_SET_STRUCT_T rSetP2P; */
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, WARN,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);
@@ -658,6 +676,19 @@ static ssize_t procMCRRead(struct file *filp, char __user *buf,
 	if (*f_pos > 0)
 		return 0;	/* To indicate end of file. */
 
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
+
 	prGlueInfo = g_prGlueInfo_proc;
 
 	rMcrInfo.u4McrOffset = u4McrOffset;
@@ -706,6 +737,19 @@ static ssize_t procMCRWrite(struct file *file, const char __user *buffer,
 	uint32_t u4BufLen;
 	uint32_t rStatus = WLAN_STATUS_SUCCESS;
 	int num = 0;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	ASSERT(data);
 
@@ -778,6 +822,19 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer,
 	struct GLUE_INFO *prGlueInfo = NULL;
 	struct ADAPTER *prAdapter = NULL;
 
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
+
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);
 
@@ -811,6 +868,8 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer,
 	}
 
 	if (fgParamValue) {
+		uint8_t i;
+
 		prGlueInfo = wlanGetGlueInfo();
 		if (!prGlueInfo)
 			return count;
@@ -819,7 +878,11 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer,
 		if (!prAdapter)
 			return count;
 
-		nicConfigProcSetCamCfgWrite(prAdapter, fgSetCamCfg);
+		for (i = 0; i < KAL_AIS_NUM; i++) {
+			nicConfigProcSetCamCfgWrite(prAdapter,
+				fgSetCamCfg,
+				i);
+		}
 	}
 
 	return count;
@@ -861,9 +924,11 @@ static ssize_t procPktDelayDbgCfgRead(struct file *filp, char __user *buf,
 	kalStrnCpy(temp, str, u4StrLen + 1);
 	temp += kalStrLen(temp);
 
+#if (CFG_SUPPORT_STATISTICS == 1)
 	StatsEnvGetPktDelay(&ucTxRxFlag, &ucTxIpProto, &u2TxUdpPort,
 			&u4TxDelayThreshold, &ucRxIpProto, &u2RxUdpPort,
 			&u4RxDelayThreshold);
+#endif
 
 	if (ucTxRxFlag & BIT(0)) {
 		SNPRINTF(temp, g_aucProcBuf,
@@ -952,9 +1017,10 @@ static ssize_t procPktDelayDbgCfgWrite(struct file *file, const char *buffer,
 		temp++;		/* skip ',' */
 	}
 
+#if (CFG_SUPPORT_STATISTICS == 1)
 	StatsEnvSetPktDelay(ucTxOrRx, (uint8_t) u4IpProto, (uint16_t) u4PortNum,
 		u4DelayThreshold);
-
+#endif
 	return count;
 }
 
@@ -977,6 +1043,19 @@ static ssize_t procRoamRead(struct file *filp, char __user *buf,
 	 */
 	if (*f_pos > 0 || buf == NULL)
 		return 0;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	rStatus =
 	    kalIoctl(g_prGlueInfo_proc, wlanoidGetRoamParams, g_aucProcBuf,
@@ -1002,6 +1081,19 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 	uint32_t rStatus;
 	uint32_t u4BufLen = 0;
 	uint32_t u4CopySize = sizeof(g_aucProcBuf);
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);
@@ -1035,14 +1127,13 @@ static const struct file_operations roam_ops = {
 	.read = procRoamRead,
 	.write = procRoamWrite,
 };
+#endif
 
 static ssize_t procCountryRead(struct file *filp, char __user *buf,
 	size_t count, loff_t *f_pos)
 {
 	uint32_t u4CopySize;
 	uint16_t u2CountryCode = 0;
-	uint32_t u4BufLen;
-	uint32_t rStatus;
 
 	/* if *f_pos > 0, it means has read successed last time,
 	 * don't try again
@@ -1050,12 +1141,11 @@ static ssize_t procCountryRead(struct file *filp, char __user *buf,
 	if (*f_pos > 0 || buf == NULL)
 		return 0;
 
-	rStatus = kalIoctl(g_prGlueInfo_proc, wlanoidGetCountryCode,
-		&u2CountryCode, 2, TRUE, FALSE, TRUE, &u4BufLen);
-	if (rStatus != WLAN_STATUS_SUCCESS) {
-		DBGLOG(INIT, INFO, "failed to get country code\n");
-		return -EINVAL;
+	if (g_prGlueInfo_proc && g_prGlueInfo_proc->prAdapter) {
+		u2CountryCode = g_prGlueInfo_proc->prAdapter->rWifiVar.
+			u2CountryCode;
 	}
+
 	if (u2CountryCode)
 		kalSprintf(g_aucProcBuf, "Current Country Code: %c%c\n",
 			(u2CountryCode >> 8) & 0xff, u2CountryCode & 0xff);
@@ -1065,7 +1155,7 @@ static ssize_t procCountryRead(struct file *filp, char __user *buf,
 
 	u4CopySize = kalStrLen(g_aucProcBuf);
 	if (copy_to_user(buf, g_aucProcBuf, u4CopySize)) {
-		pr_err("copy to user failed\n");
+		pr_info("copy to user failed\n");
 		return -EFAULT;
 	}
 	*f_pos += u4CopySize;
@@ -1079,6 +1169,19 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 	uint32_t u4BufLen = 0;
 	uint32_t rStatus;
 	uint32_t u4CopySize = sizeof(g_aucProcBuf);
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);
@@ -1104,7 +1207,6 @@ static const struct file_operations country_ops = {
 	.read = procCountryRead,
 	.write = procCountryWrite,
 };
-#endif
 
 static ssize_t procAutoPerfCfgRead(struct file *filp, char __user *buf,
 	size_t count, loff_t *f_pos)
@@ -1149,6 +1251,19 @@ static ssize_t procAutoPerfCfgWrite(struct file *file, const char *buffer,
 	uint8_t i = 0;
 	uint32_t u4ForceEnable = 0;
 	uint8_t aucBuf[32];
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	if (u4CopySize >= sizeof(g_aucProcBuf))
 		u4CopySize = sizeof(g_aucProcBuf) - 1;
@@ -1411,7 +1526,11 @@ void glNotifyDrvStatus(enum DRV_STATUS_T eDrvStatus, void *pvInfo)
 	}
 	mutex_unlock(&drvStatusLock);
 	/* Wake up all readers if at least one is waiting */
+#if KERNEL_VERSION(4, 13, 0) <= CFG80211_VERSION_CODE
+	if (!list_empty(&waitqDrvStatus.head))
+#else
 	if (!list_empty(&waitqDrvStatus.task_list))
+#endif
 		wake_up_interruptible(&waitqDrvStatus);
 }
 
@@ -1428,6 +1547,19 @@ static ssize_t procReadDrvStatus(struct file *filp, char __user *buf,
 	uint8_t *pucRdPos = NULL;
 	uint32_t u4CopySize = 0;
 	int32_t ret = -1;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	while (ret) {
 		ret = wait_event_interruptible(
@@ -1514,6 +1646,19 @@ static ssize_t procReadDrvStatus(struct file *filp, char __user *buf,
 static ssize_t procDrvStatusCfg(struct file *file, const char *buffer,
 				size_t count, loff_t *data)
 {
+#if CFG_CHIP_RESET_SUPPORT
+	if (!g_prGlueInfo_proc) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(g_prGlueInfo_proc)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       g_prGlueInfo_proc->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
+
 	if (count >= sizeof(g_aucProcBuf))
 		count = sizeof(g_aucProcBuf) - 1;
 
@@ -1660,8 +1805,8 @@ int32_t procRemoveProcfs(void)
 #endif
 #if CFG_SUPPORT_DEBUG_FS
 	remove_proc_entry(PROC_ROAM_PARAM, gprProcNetRoot);
-	remove_proc_entry(PROC_COUNTRY, gprProcNetRoot);
 #endif
+	remove_proc_entry(PROC_COUNTRY, gprProcNetRoot);
 
 	return 0;
 } /* end of procRemoveProcfs() */
@@ -1670,7 +1815,7 @@ int32_t procCreateFsEntry(struct GLUE_INFO *prGlueInfo)
 {
 	struct proc_dir_entry *prEntry;
 
-	DBGLOG(INIT, INFO, "[%s]\n", __func__);
+	DBGLOG(INIT, TRACE, "[%s]\n", __func__);
 	g_prGlueInfo_proc = prGlueInfo;
 
 	prEntry = proc_create(PROC_MCR_ACCESS, 0664, gprProcNetRoot, &mcr_ops);
@@ -1707,12 +1852,12 @@ int32_t procCreateFsEntry(struct GLUE_INFO *prGlueInfo)
 		       "Unable to create /proc entry roam_param\n\r");
 		return -1;
 	}
+#endif
 	prEntry = proc_create(PROC_COUNTRY, 0664, gprProcNetRoot, &country_ops);
 	if (prEntry == NULL) {
 		DBGLOG(INIT, ERROR, "Unable to create /proc entry country\n\r");
 		return -1;
 	}
-#endif
 #if	CFG_SUPPORT_EASY_DEBUG
 
 	prEntry =
@@ -2003,6 +2148,16 @@ static ssize_t cfgRead(struct file *filp, char __user *buf, size_t count,
 	/* if *f_pos >  0, we should return 0 to make cat command exit */
 	if (*f_pos > 0 || gprGlueInfo == NULL)
 		return 0;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!wlanIsDriverReady(gprGlueInfo)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       gprGlueInfo->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
+
 	if (!kalStrLen(aucCfgQueryKey))
 		return 0;
 
@@ -2053,6 +2208,19 @@ static ssize_t cfgWrite(struct file *filp, const char __user *buf,
 	uint8_t i = 0;
 	uint32_t u4CopySize = sizeof(aucCfgBuf);
 	uint8_t token_num = 1;
+
+#if CFG_CHIP_RESET_SUPPORT
+	if (!gprGlueInfo) {
+		DBGLOG(INIT, ERROR, "g_prGlueInfo_proc is null\n");
+		return 0;
+	}
+	if (!wlanIsDriverReady(gprGlueInfo)) {
+		DBGLOG(INIT, ERROR,
+		       "driver is not ready: u4ReadyFlag=%u, kalIsResetting()=%d\n",
+		       gprGlueInfo->u4ReadyFlag, kalIsResetting());
+		return 0; /* return 0 to make command exit */
+	}
+#endif
 
 	kalMemSet(aucCfgBuf, 0, u4CopySize);
 	u4CopySize = (count < u4CopySize) ? count : (u4CopySize - 1);

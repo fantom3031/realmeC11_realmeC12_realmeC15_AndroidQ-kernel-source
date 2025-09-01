@@ -146,7 +146,7 @@ static MTK_WCN_HIF_SDIO_CLTINFO cltInfo = {
 static int mtk_sdio_pm_suspend(struct device *pDev);
 static int mtk_sdio_pm_resume(struct device *pDev);
 
-static const struct sdio_device_id mtk_sdio_ids[] = {
+const struct sdio_device_id mtk_sdio_ids[] = {
 	{	SDIO_DEVICE(0x037a, 0x6602),
 		.driver_data = (kernel_ulong_t)&mt66xx_driver_data_mt6632},/* Not an SDIO standard class device */
 	{	SDIO_DEVICE(0x037a, 0x7608),
@@ -182,7 +182,11 @@ static const struct dev_pm_ops mtk_sdio_pm_ops = {
 };
 
 static struct sdio_driver mtk_sdio_driver = {
-	.name = "wlan",		/* "MTK SDIO WLAN Driver" */
+#ifdef CFG_SUPPORT_DUAL_CARD_DUAL_DRIVER_B
+	.name = "wlanb",        /* "MTK SDIO WLAN Driver" */
+#else
+	.name = "wlan",     /* "MTK SDIO WLAN Driver" */
+#endif
 	.id_table = mtk_sdio_ids,
 	.probe = NULL,
 	.remove = NULL,
@@ -293,8 +297,9 @@ static void mtk_sdio_interrupt(struct sdio_func *func)
 
 /* FIXME: global variable */
 static const MTK_WCN_HIF_SDIO_FUNCINFO *prFunc;
-
-static INT_32 mtk_sdio_probe(MTK_WCN_HIF_SDIO_CLTCTX cltCtx, const MTK_WCN_HIF_SDIO_FUNCINFO *prFuncInfo)
+INT_32 mtk_sdio_probe(
+	MTK_WCN_HIF_SDIO_CLTCTX cltCtx,
+	const MTK_WCN_HIF_SDIO_FUNCINFO *prFuncInfo)
 {
 	INT_32 ret = HIF_SDIO_ERR_SUCCESS;
 	INT_32 i = 0;
@@ -325,9 +330,15 @@ static INT_32 mtk_sdio_probe(MTK_WCN_HIF_SDIO_CLTCTX cltCtx, const MTK_WCN_HIF_S
 	return ret;
 }
 #else
-static int mtk_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
+int mtk_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
 {
 	int ret = 0;
+#if defined(CFG_SUPPORT_DUAL_CARD_DUAL_DRIVER_A)
+#define MMC_FILTER	"mmc1"
+#elif defined(CFG_SUPPORT_DUAL_CARD_DUAL_DRIVER_B)
+#define MMC_FILTER	"mmc0"
+#endif
+
 	/* int i = 0; */
 
 	/* printk(KERN_INFO DRV_NAME "mtk_sdio_probe()\n"); */
@@ -354,6 +365,14 @@ static int mtk_sdio_probe(struct sdio_func *func, const struct sdio_device_id *i
 	*	printk(KERN_INFO DRV_NAME "info[%d]: %s\n", i, func->card->info[i]);
 	*
 	*/
+#ifdef MMC_FILTER
+	if (strcmp(mmc_hostname(func->card->host), MMC_FILTER) == 0) {
+		ret = -1;
+		goto out;
+	}
+#endif
+
+	
 
 	sdio_claim_host(func);
 	ret = sdio_enable_func(func);
@@ -378,7 +397,7 @@ out:
 #endif
 
 #if MTK_WCN_HIF_SDIO
-static INT_32 mtk_sdio_remove(MTK_WCN_HIF_SDIO_CLTCTX cltCtx)
+INT_32 mtk_sdio_remove(MTK_WCN_HIF_SDIO_CLTCTX cltCtx)
 {
 	INT_32 ret = HIF_SDIO_ERR_SUCCESS;
 	/* printk(KERN_INFO DRV_NAME"pfWlanRemove done\n"); */
@@ -387,7 +406,7 @@ static INT_32 mtk_sdio_remove(MTK_WCN_HIF_SDIO_CLTCTX cltCtx)
 	return ret;
 }
 #else
-static void mtk_sdio_remove(struct sdio_func *func)
+void mtk_sdio_remove(struct sdio_func *func)
 {
 	/* printk(KERN_INFO DRV_NAME"mtk_sdio_remove()\n"); */
 
@@ -418,17 +437,11 @@ static int mtk_sdio_pm_suspend(struct device *pDev)
 	func = dev_to_sdio_func(pDev);
 	prGlueInfo = sdio_get_drvdata(func);
 
-	DBGLOG(REQ, STATE, "Wow:%d, WowEnable:%d, state:%d\n",
-		prGlueInfo->prAdapter->rWifiVar.ucWow, prGlueInfo->prAdapter->rWowCtrl.fgWowEnable,
-		kalGetMediaStateIndicated(prGlueInfo));
-
-	/* 1) wifi cfg "Wow" is true, 2) wow is enable 3) WIfI connected => execute WOW flow */
-	if (prGlueInfo->prAdapter->rWifiVar.ucWow &&
-		prGlueInfo->prAdapter->rWowCtrl.fgWowEnable &&
-		(kalGetMediaStateIndicated(prGlueInfo) == PARAM_MEDIA_STATE_CONNECTED)) {
-		DBGLOG(HAL, STATE, "enter WOW flow\n");
-		kalWowProcess(prGlueInfo, TRUE);
-	}
+	/* This suspend API could be triggered multiple times.
+	*  Make sure wlanSuspendPmHandle() called once only.
+	*/
+	if (prGlueInfo->prAdapter->fgForceFwOwn == FALSE)
+		wlanSuspendPmHandle(prGlueInfo);
 
 	prGlueInfo->prAdapter->fgForceFwOwn = TRUE;
 
@@ -468,6 +481,7 @@ static int mtk_sdio_pm_suspend(struct device *pDev)
 		DBGLOG(HAL, ERROR, "set flag %d err %d\n", set_flag, ret);
 		DBGLOG(HAL, ERROR,
 			"%s: cannot remain alive(0x%X)\n", func_id, pm_caps);
+		return -ENOSYS;
 	}
 
 	/* If wow enable, ask kernel accept SDIO IRQ in suspend mode */
@@ -496,18 +510,9 @@ static int mtk_sdio_pm_resume(struct device *pDev)
 	func = dev_to_sdio_func(pDev);
 	prGlueInfo = sdio_get_drvdata(func);
 
-	DBGLOG(REQ, STATE, "Wow:%d, WowEnable:%d, state:%d\n",
-		prGlueInfo->prAdapter->rWifiVar.ucWow, prGlueInfo->prAdapter->rWowCtrl.fgWowEnable,
-		kalGetMediaStateIndicated(prGlueInfo));
-
 	prGlueInfo->prAdapter->fgForceFwOwn = FALSE;
 
-	if (prGlueInfo->prAdapter->rWifiVar.ucWow &&
-		prGlueInfo->prAdapter->rWowCtrl.fgWowEnable &&
-		(kalGetMediaStateIndicated(prGlueInfo) == PARAM_MEDIA_STATE_CONNECTED)) {
-		DBGLOG(HAL, STATE, "leave WOW flow\n");
-		kalWowProcess(prGlueInfo, FALSE);
-	}
+	wlanResumePmHandle(prGlueInfo);
 
 	DBGLOG(HAL, STATE, "<==\n");
 	return 0;
@@ -689,6 +694,10 @@ VOID glSetHifInfo(P_GLUE_INFO_T prGlueInfo, ULONG ulCookie)
 
 	mutex_init(&prHif->rRxFreeBufQueMutex);
 	mutex_init(&prHif->rRxDeAggQueMutex);
+#if CFG_CHIP_RESET_SUPPORT
+	rst_data.func = prGlueInfo->rHifInfo.func;
+	mutex_init(&(rst_data.rst_mutex));
+#endif
 
 }				/* end of glSetHifInfo() */
 
@@ -934,9 +943,19 @@ BOOL kalDevRegRead(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, OUT PUINT
 	} while (ret);
 
 	if (ret) {
+#if CFG_CHIP_RESET_SUPPORT
+		P_ADAPTER_T prAdapter = NULL;
+#endif
 		kalSendAeeWarning(HIF_SDIO_ERR_TITLE_STR,
 				  HIF_SDIO_ERR_DESC_STR "sdio_readl() reports error: %x retry: %u", ret, ucRetryCount);
 		DBGLOG(HAL, ERROR, "sdio_readl() reports error: %x retry: %u\n", ret, ucRetryCount);
+#if CFG_CHIP_RESET_SUPPORT
+		prAdapter = container_of(&prGlueInfo, ADAPTER_T, prGlueInfo);
+		prAdapter->fgIsChipNoAck = TRUE;
+		DBGLOG(HAL, ERROR, "fgIsChipNoAck = %d\n",
+						prAdapter->fgIsChipNoAck);
+		glResetTrigger(prAdapter);
+#endif
 	}
 
 	return (ret) ? FALSE : TRUE;
@@ -958,6 +977,7 @@ BOOL kalDevRegRead_mac(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, OUT P
 {
 	UINT_32 value;
 	UINT_32 u4Time, u4Current;
+	BOOL ucRet;
 
     /* progrqm h2d mailbox0 as interested register address */
 	kalDevRegWrite(prGlueInfo, MCR_H2DSM0R, u4Register);
@@ -968,18 +988,18 @@ BOOL kalDevRegRead_mac(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, OUT P
 	/* polling interrupt status asserted. bit16 */
 
 	/* first, disable interrupt enable for SDIO_MAILBOX_FUNC_READ_REG_IDX */
-	kalDevRegRead(prGlueInfo, MCR_WHIER, &value);
+	ucRet = kalDevRegRead(prGlueInfo, MCR_WHIER, &value);
 	kalDevRegWrite(prGlueInfo, MCR_WHIER, (value & ~SDIO_MAILBOX_FUNC_READ_REG_IDX));
 
 	u4Time = (UINT_32) kalGetTimeTick();
 
 	do {
 		/* check bit16 of WHISR assert for read register response */
-		kalDevRegRead(prGlueInfo, MCR_WHISR, &value);
+		ucRet = kalDevRegRead(prGlueInfo, MCR_WHISR, &value);
 
 		if (value & SDIO_MAILBOX_FUNC_READ_REG_IDX) {
 			/* read d2h mailbox0 for interested register address */
-			kalDevRegRead(prGlueInfo, MCR_D2HRM0R, &value);
+			ucRet = kalDevRegRead(prGlueInfo, MCR_D2HRM0R, &value);
 
 			if (value != u4Register) {
 				DBGLOG(HAL, ERROR, "ERROR! kalDevRegRead_mac():register address mis-match");
@@ -989,7 +1009,7 @@ BOOL kalDevRegRead_mac(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, OUT P
 			}
 
 			/* read d2h mailbox1 for the value of the register */
-			kalDevRegRead(prGlueInfo, MCR_D2HRM1R, &value);
+			ucRet = kalDevRegRead(prGlueInfo, MCR_D2HRM1R, &value);
 			*pu4Value = value;
 			return	TRUE;
 		}
@@ -1051,9 +1071,19 @@ BOOL kalDevRegWrite(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, IN UINT_
 	} while (ret);
 
 	if (ret) {
+#if CFG_CHIP_RESET_SUPPORT
+		P_ADAPTER_T prAdapter = NULL;
+#endif
 		kalSendAeeWarning(HIF_SDIO_ERR_TITLE_STR,
 				  HIF_SDIO_ERR_DESC_STR "sdio_writel() reports error: %x retry: %u", ret, ucRetryCount);
 		DBGLOG(HAL, ERROR, "sdio_writel() reports error: %x retry: %u\n", ret, ucRetryCount);
+#if CFG_CHIP_RESET_SUPPORT
+		prAdapter = container_of(&prGlueInfo, ADAPTER_T, prGlueInfo);
+		prAdapter->fgIsChipNoAck = TRUE;
+		DBGLOG(HAL, ERROR, "fgIsChipNoAck = %d\n",
+					prAdapter->fgIsChipNoAck);
+		glResetTrigger(prAdapter);
+#endif
 	}
 
 	return (ret) ? FALSE : TRUE;
@@ -1075,6 +1105,7 @@ BOOL kalDevRegWrite_mac(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, IN U
 {
 	UINT_32 value;
 	UINT_32 u4Time, u4Current;
+	BOOL ucRet;
 
 	/* progrqm h2d mailbox0 as interested register address */
 	kalDevRegWrite(prGlueInfo, MCR_H2DSM0R, u4Register);
@@ -1088,18 +1119,18 @@ BOOL kalDevRegWrite_mac(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Register, IN U
 	/* polling interrupt status asserted. bit17 */
 
 	/* first, disable interrupt enable for SDIO_MAILBOX_FUNC_WRITE_REG_IDX */
-	kalDevRegRead(prGlueInfo, MCR_WHIER, &value);
+	ucRet = kalDevRegRead(prGlueInfo, MCR_WHIER, &value);
 	kalDevRegWrite(prGlueInfo, MCR_WHIER, (value & ~SDIO_MAILBOX_FUNC_WRITE_REG_IDX));
 
 	u4Time = (UINT_32) kalGetTimeTick();
 
 	do {
 		/* check bit17 of WHISR assert for response */
-		kalDevRegRead(prGlueInfo, MCR_WHISR, &value);
+		ucRet = kalDevRegRead(prGlueInfo, MCR_WHISR, &value);
 
 		if (value & SDIO_MAILBOX_FUNC_WRITE_REG_IDX) {
 			/* read d2h mailbox0 for interested register address */
-			kalDevRegRead(prGlueInfo, MCR_D2HRM0R, &value);
+			ucRet = kalDevRegRead(prGlueInfo, MCR_D2HRM0R, &value);
 
 			if (value != u4Register) {
 				DBGLOG(HAL, ERROR, "ERROR! kalDevRegWrite_mac():register address mis-match");
@@ -1217,8 +1248,18 @@ kalDevPortRead(IN P_GLUE_INFO_T prGlueInfo,
 #endif
 
 	if (ret) {
+#if CFG_CHIP_RESET_SUPPORT
+		P_ADAPTER_T prAdapter = NULL;
+#endif
 		kalSendAeeWarning(HIF_SDIO_ERR_TITLE_STR, HIF_SDIO_ERR_DESC_STR "sdio_readsb() reports error: %x", ret);
 		DBGLOG(HAL, ERROR, "sdio_readsb() reports error: %x\n", ret);
+#if CFG_CHIP_RESET_SUPPORT
+		prAdapter = container_of(&prGlueInfo, ADAPTER_T, prGlueInfo);
+		prAdapter->fgIsChipNoAck = TRUE;
+		DBGLOG(HAL, ERROR, "fgIsChipNoAck = %d\n",
+						prAdapter->fgIsChipNoAck);
+		glResetTrigger(prAdapter);
+#endif
 	}
 
 	return (ret) ? FALSE : TRUE;
@@ -1315,9 +1356,19 @@ kalDevPortWrite(IN P_GLUE_INFO_T prGlueInfo,
 #endif
 
 	if (ret) {
+#if CFG_CHIP_RESET_SUPPORT
+		P_ADAPTER_T prAdapter = NULL;
+#endif
 		kalSendAeeWarning(HIF_SDIO_ERR_TITLE_STR,
 				  HIF_SDIO_ERR_DESC_STR "sdio_writesb() reports error: %x", ret);
 		DBGLOG(HAL, ERROR, "sdio_writesb() reports error: %x\n", ret);
+#if CFG_CHIP_RESET_SUPPORT
+		prAdapter = container_of(&prGlueInfo, ADAPTER_T, prGlueInfo);
+		prAdapter->fgIsChipNoAck = TRUE;
+		DBGLOG(HAL, ERROR, "fgIsChipNoAck = %d\n",
+						prAdapter->fgIsChipNoAck);
+		glResetTrigger(prAdapter);
+#endif
 	}
 
 	return (ret) ? FALSE : TRUE;
@@ -1410,8 +1461,18 @@ BOOL kalDevWriteWithSdioCmd52(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Addr, IN
 #endif
 
 	if (ret) {
+#if CFG_CHIP_RESET_SUPPORT
+		P_ADAPTER_T prAdapter = container_of(&prGlueInfo, ADAPTER_T,
+								prGlueInfo);
+#endif
 		kalSendAeeWarning(HIF_SDIO_ERR_TITLE_STR, HIF_SDIO_ERR_DESC_STR "sdio_writeb() reports error: %x", ret);
 		DBGLOG(HAL, ERROR, "sdio_writeb() reports error: %x\n", ret);
+#if CFG_CHIP_RESET_SUPPORT
+		prAdapter->fgIsChipNoAck = TRUE;
+		DBGLOG(HAL, ERROR, "fgIsChipNoAck = %d\n",
+					prAdapter->fgIsChipNoAck);
+		glResetTrigger(prAdapter);
+#endif
 	}
 
 	return (ret) ? FALSE : TRUE;

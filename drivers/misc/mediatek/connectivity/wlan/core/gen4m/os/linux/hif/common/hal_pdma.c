@@ -119,6 +119,36 @@
 
 /*----------------------------------------------------------------------------*/
 /*!
+ * @brief Decide TxRingData number by MsduInfo
+ *
+ * @param prGlueInfo
+ *
+ * @param prMsduInfo
+ *
+ * @return TxRingData number
+ */
+/*----------------------------------------------------------------------------*/
+uint8_t halTxRingDataSelect(IN struct ADAPTER *prAdapter,
+	IN struct MSDU_INFO *prMsduInfo)
+{
+	struct BUS_INFO *bus_info;
+	uint16_t u2Port = TX_RING_DATA0_IDX_0;
+
+	ASSERT(prAdapter);
+
+	bus_info = prAdapter->chip_info->bus_info;
+
+	/* Wmm1 use TxRing1 if supported */
+	if (bus_info->tx_ring0_data_idx != bus_info->tx_ring1_data_idx) {
+		u2Port = prMsduInfo->ucWmmQueSet == 1 ?
+			TX_RING_DATA1_IDX_1 : TX_RING_DATA0_IDX_0;
+	}
+	return u2Port;
+}
+
+
+/*----------------------------------------------------------------------------*/
+/*!
  * @brief check is timeout or not
  *
  * @param u4StartTime start time
@@ -428,10 +458,12 @@ u_int8_t halSetDriverOwn(IN struct ADAPTER *prAdapter)
 			prAdapter->u4OwnFailedCount = 0;
 			prAdapter->u4OwnFailedLogCount = 0;
 			break;
+		} else if (wlanIsChipNoAck(prAdapter)) {
+			fgStatus = FALSE;
+			break;
 		} else if ((i > LP_OWN_BACK_FAILED_RETRY_CNT) &&
 			   (kalIsCardRemoved(prAdapter->prGlueInfo) ||
-			    fgIsBusAccessFailed || fgTimeout ||
-			    wlanIsChipNoAck(prAdapter))) {
+			    fgIsBusAccessFailed || fgTimeout)) {
 			halDriverOwnTimeout(prAdapter, u4CurrTick, fgTimeout);
 			fgStatus = FALSE;
 			break;
@@ -469,9 +501,9 @@ u_int8_t halSetDriverOwn(IN struct ADAPTER *prAdapter)
 	}
 
 	KAL_REC_TIME_END();
-	DBGLOG(INIT, INFO,
-		"DRIVER OWN Done[%lu us]\n", KAL_GET_TIME_INTERVAL());
-
+        //Mingkai.Yu@ODM_WT.BSP.CONN.WIFI.BugID2748136, 2020/05/13, Modify for reduce reduce wifi kernel log print.
+	/*DBGLOG_LIMITED(INIT, INFO,
+		"DRIVER OWN Done[%lu us]\n", KAL_GET_TIME_INTERVAL());*/
 	return fgStatus;
 }
 
@@ -520,7 +552,8 @@ void halSetFWOwn(IN struct ADAPTER *prAdapter, IN u_int8_t fgEnableGlobalInt)
 
 		prAdapter->fgIsFwOwn = TRUE;
 
-		DBGLOG(INIT, INFO, "FW OWN:%u\n", fgResult);
+                //Mingkai.Yu@ODM_WT.BSP.CONN.WIFI.BugID2748136, 2020/05/13, Modify for reduce reduce wifi kernel log print.
+		//DBGLOG_LIMITED(INIT, INFO, "FW OWN:%u\n", fgResult);
 	}
 }
 
@@ -545,18 +578,22 @@ u_int8_t halTxIsDataBufEnough(IN struct ADAPTER *prAdapter,
 {
 	struct GL_HIF_INFO *prHifInfo = NULL;
 	struct RTMP_TX_RING *prTxRing;
+	uint16_t u2Port;
 
+	u2Port = halTxRingDataSelect(prAdapter, prMsduInfo);
 	prHifInfo = &prAdapter->prGlueInfo->rHifInfo;
-	prTxRing = &prHifInfo->TxRing[TX_RING_DATA0_IDX_0];
+	prTxRing = &prHifInfo->TxRing[u2Port];
 
 	if ((prHifInfo->u4TxDataQLen < halGetMsduTokenFreeCnt(prAdapter)) &&
 	    (prTxRing->u4UsedCnt + prHifInfo->u4TxDataQLen + 1 < TX_RING_SIZE))
 		return TRUE;
 
 	DBGLOG(HAL, TRACE,
-	       "Low Tx Data Resource Tok[%u] Ring[%u] List[%u]\n",
-	       halGetMsduTokenFreeCnt(prAdapter),
-	       (TX_RING_SIZE - prTxRing->u4UsedCnt), prHifInfo->u4TxDataQLen);
+		"Low Tx Data Resource Tok[%u] Ring%d[%u] List[%u]\n",
+		halGetMsduTokenFreeCnt(prAdapter),
+		u2Port,
+		(TX_RING_SIZE - prTxRing->u4UsedCnt),
+		prHifInfo->u4TxDataQLen);
 	return FALSE;
 }
 
@@ -565,6 +602,7 @@ void halProcessTxInterrupt(IN struct ADAPTER *prAdapter)
 	struct BUS_INFO *prBusInfo = prAdapter->chip_info->bus_info;
 	struct GL_HIF_INFO *prHifInfo = &prAdapter->prGlueInfo->rHifInfo;
 	union WPDMA_INT_STA_STRUCT rIntrStatus;
+	bool fgIsSetHifTxEvent = false;
 
 	rIntrStatus = (union WPDMA_INT_STA_STRUCT)prHifInfo->u4IntStatus;
 
@@ -576,12 +614,21 @@ void halProcessTxInterrupt(IN struct ADAPTER *prAdapter)
 		halWpdmaProcessCmdDmaDone(prAdapter->prGlueInfo,
 			TX_RING_CMD_IDX_2);
 
-	if (rIntrStatus.field.tx_done & BIT(prBusInfo->tx_ring_data_idx)) {
+	if (rIntrStatus.field.tx_done & BIT(prBusInfo->tx_ring0_data_idx)) {
 		halWpdmaProcessDataDmaDone(prAdapter->prGlueInfo,
 			TX_RING_DATA0_IDX_0);
-
-		kalSetTxEvent2Hif(prAdapter->prGlueInfo);
+		fgIsSetHifTxEvent = true;
 	}
+
+	if (prBusInfo->tx_ring0_data_idx != prBusInfo->tx_ring1_data_idx &&
+		rIntrStatus.field.tx_done & BIT(prBusInfo->tx_ring1_data_idx)) {
+		halWpdmaProcessDataDmaDone(prAdapter->prGlueInfo,
+			TX_RING_DATA1_IDX_1);
+		fgIsSetHifTxEvent = true;
+	}
+
+	if (fgIsSetHifTxEvent)
+		kalSetTxEvent2Hif(prAdapter->prGlueInfo);
 }
 
 void halInitMsduTokenInfo(IN struct ADAPTER *prAdapter)
@@ -911,7 +958,6 @@ void halRxProcessMsduReport(IN struct ADAPTER *prAdapter,
 	ASSERT(prAdapter->prGlueInfo);
 
 	prHifInfo = &prAdapter->prGlueInfo->rHifInfo;
-	prTxRing = &prHifInfo->TxRing[TX_RING_DATA0_IDX_0];
 	prMemOps = &prHifInfo->rMemOps;
 
 	prFreeQueue = &rFreeQueue;
@@ -966,6 +1012,7 @@ void halRxProcessMsduReport(IN struct ADAPTER *prAdapter,
 		}
 
 		if (prTokenEntry->u4CpuIdx < TX_RING_SIZE) {
+			prTxRing = &prHifInfo->TxRing[prTokenEntry->u2Port];
 			prTxCell = &prTxRing->Cell[prTokenEntry->u4CpuIdx];
 			prTxCell->prToken = NULL;
 		}
@@ -1205,7 +1252,7 @@ bool halWpdmaAllocTxRing(struct GLUE_INFO *prGlueInfo, uint32_t u4Num,
 	}
 
 	DBGLOG(HAL, TRACE, "TxDescRing[%p]: total %lu bytes allocated\n",
-	       prTxDesc->AllocVa, (uint64_t)prTxDesc->AllocSize);
+	       prTxDesc->AllocVa, prTxDesc->AllocSize);
 
 	/* Save PA & VA for further operation */
 	RingBasePa = prTxDesc->AllocPa;
@@ -1271,7 +1318,7 @@ bool halWpdmaAllocRxRing(struct GLUE_INFO *prGlueInfo, uint32_t u4Num,
 	}
 
 	DBGLOG(HAL, TRACE, "RxDescRing[%p]: total %lu bytes allocated\n",
-		prRxDesc->AllocVa, (uint64_t)prRxDesc->AllocSize);
+		prRxDesc->AllocVa, prRxDesc->AllocSize);
 
 	/* Initialize Rx Ring and associated buffer memory */
 	RingBasePa = prRxDesc->AllocPa;
@@ -1311,8 +1358,12 @@ bool halWpdmaAllocRxRing(struct GLUE_INFO *prGlueInfo, uint32_t u4Num,
 		pRxD = (struct RXD_STRUCT *)prRxCell->AllocVa;
 		pRxD->SDPtr0 = ((uint64_t)pDmaBuf->AllocPa) &
 			DMA_LOWER_32BITS_MASK;
+#ifdef CONFIG_64BIT
 		pRxD->SDPtr1 = (((uint64_t)pDmaBuf->AllocPa >>
 			DMA_BITS_OFFSET) & DMA_HIGHER_4BITS_MASK);
+#else
+		pRxD->SDPtr1 = 0;
+#endif
 		pRxD->SDLen0 = u4BufSize;
 		pRxD->DMADONE = 0;
 	}
@@ -1526,8 +1577,12 @@ void halWpdmaInitTxRing(IN struct GLUE_INFO *prGlueInfo)
 			offset = i * MT_RINGREG_DIFF;
 		phy_addr = ((uint64_t)prTxCell->AllocPa) &
 			DMA_LOWER_32BITS_MASK;
+#ifdef CONFIG_64BIT
 		phy_addr_ext = (((uint64_t)prTxCell->AllocPa >>
 			DMA_BITS_OFFSET) & DMA_HIGHER_4BITS_MASK);
+#else
+		phy_addr_ext = 0;
+#endif
 		ext_offset = i * MT_RINGREG_EXT_DIFF;
 		prTxRing->TxSwUsedIdx = 0;
 		prTxRing->u4UsedCnt = 0;
@@ -1567,8 +1622,12 @@ void halWpdmaInitRxRing(IN struct GLUE_INFO *prGlueInfo)
 		offset = i * MT_RINGREG_DIFF;
 		phy_addr = ((uint64_t)prRxRing->Cell[0].AllocPa &
 			DMA_LOWER_32BITS_MASK);
+#ifdef CONFIG_64BIT
 		phy_addr_ext = (((uint64_t)prRxRing->Cell[0].AllocPa >>
 			DMA_BITS_OFFSET) & DMA_HIGHER_4BITS_MASK);
+#else
+		phy_addr_ext = 0;
+#endif
 		ext_offset = i * MT_RINGREG_EXT_DIFF;
 		prRxRing->RxCpuIdx = prRxRing->u4RingSize - 1;
 		prRxRing->hw_desc_base = MT_RX_RING_BASE + offset;
@@ -1601,7 +1660,7 @@ void halWpdmaProcessCmdDmaDone(IN struct GLUE_INFO *prGlueInfo,
 	struct TXD_STRUCT *pTxD;
 	phys_addr_t PacketPa = 0;
 	void *pBuffer = NULL;
-	uint32_t u4SwIdx, u4DmaIdx;
+	uint32_t u4SwIdx, u4DmaIdx = 0;
 
 	ASSERT(prGlueInfo);
 
@@ -1651,7 +1710,7 @@ void halWpdmaProcessDataDmaDone(IN struct GLUE_INFO *prGlueInfo,
 	IN uint16_t u2Port)
 {
 	struct GL_HIF_INFO *prHifInfo = NULL;
-	uint32_t u4SwIdx, u4DmaIdx;
+	uint32_t u4SwIdx, u4DmaIdx = 0;
 	struct RTMP_TX_RING *prTxRing;
 
 	ASSERT(prGlueInfo);
@@ -1684,7 +1743,7 @@ uint32_t halWpdmaGetRxDmaDoneCnt(IN struct GLUE_INFO *prGlueInfo,
 {
 	struct RTMP_RX_RING *prRxRing;
 	struct GL_HIF_INFO *prHifInfo;
-	uint32_t u4MaxCnt, u4CpuIdx, u4DmaIdx, u4RxPktCnt;
+	uint32_t u4MaxCnt = 0, u4CpuIdx = 0, u4DmaIdx = 0, u4RxPktCnt;
 
 	prHifInfo = &prGlueInfo->rHifInfo;
 	prRxRing = &prHifInfo->RxRing[ucRingNum];
@@ -1752,8 +1811,12 @@ bool halWpdmaWriteCmd(IN struct GLUE_INFO *prGlueInfo,
 	}
 
 	pTxD->SDPtr0 = (uint64_t)pTxCell->PacketPa & DMA_LOWER_32BITS_MASK;
+#ifdef CONFIG_64BIT
 	pTxD->SDPtr0Ext = ((uint64_t)pTxCell->PacketPa >> DMA_BITS_OFFSET) &
 		DMA_HIGHER_4BITS_MASK;
+#else
+	pTxD->SDPtr0Ext = 0;
+#endif
 	pTxD->SDLen0 = u4TotalLen;
 	pTxD->SDPtr1 = 0;
 	pTxD->SDLen1 = 0;
@@ -1792,6 +1855,9 @@ static bool halWpdmaFillTxRing(struct GLUE_INFO *prGlueInfo,
 
 	prHifInfo = &prGlueInfo->rHifInfo;
 	prChipInfo = prGlueInfo->prAdapter->chip_info;
+
+	u2Port = halTxRingDataSelect(
+		prGlueInfo->prAdapter, prToken->prMsduInfo);
 	prTxRing = &prHifInfo->TxRing[u2Port];
 
 	kalDevRegRead(prGlueInfo, prTxRing->hw_cidx_addr, &prTxRing->TxCpuIdx);
@@ -1803,12 +1869,17 @@ static bool halWpdmaFillTxRing(struct GLUE_INFO *prGlueInfo,
 
 	pTxCell = &prTxRing->Cell[prTxRing->TxCpuIdx];
 	prToken->u4CpuIdx = prTxRing->TxCpuIdx;
+	prToken->u2Port = u2Port;
 	pTxCell->prToken = prToken;
 
 	pTxD = (struct TXD_STRUCT *)pTxCell->AllocVa;
 	pTxD->SDPtr0 = (uint64_t)prToken->rDmaAddr & DMA_LOWER_32BITS_MASK;
+#ifdef CONFIG_64BIT
 	pTxD->SDPtr0Ext = ((uint64_t)prToken->rDmaAddr >> DMA_BITS_OFFSET) &
 		DMA_HIGHER_4BITS_MASK;
+#else
+	pTxD->SDPtr0Ext = 0;
+#endif
 	pTxD->SDLen0 = NIC_TX_DESC_AND_PADDING_LENGTH +
 		prChipInfo->txd_append_size;
 	if (prChipInfo->is_support_cr4)
@@ -1827,8 +1898,9 @@ static bool halWpdmaFillTxRing(struct GLUE_INFO *prGlueInfo,
 	prTxRing->u4UsedCnt++;
 	kalDevRegWrite(prGlueInfo, prTxRing->hw_cidx_addr, prTxRing->TxCpuIdx);
 
-	DBGLOG_LIMITED(HAL, TRACE, "Tx Data: CPU idx[%u] Used[%u]\n",
-		       prTxRing->TxCpuIdx, prTxRing->u4UsedCnt);
+	DBGLOG_LIMITED(HAL, TRACE,
+		"Tx Data:Ring%d CPU idx[0x%x] Used[%u]\n",
+		u2Port, prTxRing->TxCpuIdx, prTxRing->u4UsedCnt);
 
 	return TRUE;
 }
@@ -1942,6 +2014,7 @@ bool halWpdmaWriteMsdu(struct GLUE_INFO *prGlueInfo,
 		return false;
 	}
 
+	/* Use MsduInfo to select TxRing */
 	prToken->prMsduInfo = prMsduInfo;
 
 #if HIF_TX_PREALLOC_DATA_BUFFER
@@ -1974,7 +2047,6 @@ bool halWpdmaWriteAmsdu(struct GLUE_INFO *prGlueInfo,
 {
 	struct GL_HIF_INFO *prHifInfo = NULL;
 	struct HIF_MEM_OPS *prMemOps;
-	struct RTMP_TX_RING *prTxRing;
 	struct list_head *prCur, *prNext;
 	struct TX_DATA_REQ *prTxReq;
 	struct MSDU_TOKEN_ENTRY *prFillToken = NULL, *prToken = NULL;
@@ -1983,20 +2055,25 @@ bool halWpdmaWriteAmsdu(struct GLUE_INFO *prGlueInfo,
 	struct sk_buff *prSkb;
 	uint8_t *pucSrc;
 	uint32_t u4TotalLen, u4Idx, u4FreeToken, u4FreeRing;
+	uint16_t u2Port;
 	bool fgIsLast;
 
 	ASSERT(prGlueInfo);
 
 	prHifInfo = &prGlueInfo->rHifInfo;
 	prMemOps = &prHifInfo->rMemOps;
-	prTxRing = &prHifInfo->TxRing[TX_RING_DATA0_IDX_0];
-
 	u4FreeToken = halGetMsduTokenFreeCnt(prGlueInfo->prAdapter);
-	u4FreeRing = TX_RING_SIZE - prTxRing->u4UsedCnt;
+
+	/* Peek head to select TxRing */
+	prTxReq = list_entry(prList, struct TX_DATA_REQ, list);
+	u2Port = halTxRingDataSelect(
+		prGlueInfo->prAdapter, prTxReq->prMsduInfo);
+	u4FreeRing = TX_RING_SIZE - prHifInfo->TxRing[u2Port].u4UsedCnt;
+
 	if ((u4FreeToken < u4Num) || (u4FreeRing <= 1)) {
 		DBGLOG(HAL, WARN,
-		       "Amsdu low tx res acquire[%u], tok[%u], ring[%u]\n",
-		       u4Num, u4FreeToken, u4FreeRing);
+		       "Amsdu low tx res acquire[%u], tok[%u], ring%d[%u]\n",
+		       u4Num, u4FreeToken, u2Port, u4FreeRing);
 		return false;
 	}
 
@@ -2016,6 +2093,7 @@ bool halWpdmaWriteAmsdu(struct GLUE_INFO *prGlueInfo,
 			return false;
 		}
 
+		/* Use MsduInfo to select TxRing */
 		prToken->prMsduInfo = prMsduInfo;
 
 #if HIF_TX_PREALLOC_DATA_BUFFER
@@ -2063,9 +2141,10 @@ bool halWpdmaWriteAmsdu(struct GLUE_INFO *prGlueInfo,
 	return true;
 }
 
-u_int8_t halIsStaticMapBusAddr(IN uint32_t u4Addr)
+u_int8_t halIsStaticMapBusAddr(IN struct ADAPTER *prAdapter,
+	IN uint32_t u4Addr)
 {
-	if (u4Addr < MAX_PCIE_BUS_STATIC_MAP_ADDR)
+	if (u4Addr < prAdapter->chip_info->bus_info->max_static_map_addr)
 		return TRUE;
 	else
 		return FALSE;
@@ -2079,7 +2158,7 @@ u_int8_t halChipToStaticMapBusAddr(IN struct GLUE_INFO *prGlueInfo,
 	uint32_t u4StartAddr, u4EndAddr, u4BusAddr;
 	uint32_t u4Idx = 0;
 
-	if (halIsStaticMapBusAddr(u4ChipAddr)) {
+	if (halIsStaticMapBusAddr(prGlueInfo->prAdapter, u4ChipAddr)) {
 		*pu4BusAddr = u4ChipAddr;
 		return TRUE;
 	}
@@ -2412,3 +2491,14 @@ uint32_t halGetHifTxPageSize(IN struct ADAPTER *prAdapter)
 {
 	return HIF_TX_PAGE_SIZE;
 }
+
+uint32_t halUpdateTxMaxQuota(IN struct ADAPTER *prAdapter,
+	IN uint16_t u2Port, IN uint32_t u4MaxQuota)
+{
+	if (prAdapter->chip_info->bus_info->updateTxRingMaxQuota)
+		return  prAdapter->chip_info->bus_info->updateTxRingMaxQuota(
+			prAdapter, u2Port, u4MaxQuota);
+
+	return WLAN_STATUS_SUCCESS;
+}
+

@@ -1,4 +1,6 @@
 /*
+* Copyright (C) 2016 MediaTek Inc.
+*
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 as
 * published by the Free Software Foundation.
@@ -1220,7 +1222,6 @@ VOID nicCmdEventQueryStaStatistics(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prC
 
 }
 
-#if CFG_AUTO_CHANNEL_SEL_SUPPORT
 /*----------------------------------------------------------------------------*/
 /*!
 * @brief This function is called when event for query LTE safe channels
@@ -1235,10 +1236,9 @@ VOID nicCmdEventQueryStaStatistics(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prC
 /*----------------------------------------------------------------------------*/
 VOID nicCmdEventQueryLteSafeChn(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prCmdInfo, IN PUINT_8 pucEventBuf)
 {
-	UINT_32 u4QueryInfoLen;
 	P_EVENT_LTE_SAFE_CHN_T prEvent;
-	P_GLUE_INFO_T prGlueInfo;
-	P_PARAM_GET_CHN_INFO prLteSafeChnInfo;
+	PARAM_GET_CHN_INFO rLteSafeChnInfo;
+	P_P2P_FSM_INFO_T prP2pFsmInfo = (P_P2P_FSM_INFO_T) NULL;
 	UINT_8 ucIdx = 0;
 
 	if ((prAdapter == NULL)
@@ -1249,32 +1249,33 @@ VOID nicCmdEventQueryLteSafeChn(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prCmdI
 		return;
 	}
 
-	if (prCmdInfo->fgIsOid) {
-		prGlueInfo = prAdapter->prGlueInfo;
-		prEvent = (P_EVENT_LTE_SAFE_CHN_T) pucEventBuf;	/* FW responsed data */
+	prP2pFsmInfo = prAdapter->rWifiVar.prP2pFsmInfo;
+	prEvent = (P_EVENT_LTE_SAFE_CHN_T) pucEventBuf;	/* FW responsed data */
 
-		prLteSafeChnInfo = (P_PARAM_GET_CHN_INFO) prCmdInfo->pvInformationBuffer;
-
-		u4QueryInfoLen = sizeof(PARAM_GET_CHN_INFO);
-
-		/* Statistics from FW is valid */
-		if (prEvent->u4Flags & BIT(0)) {
-			for (ucIdx = 0; ucIdx < 5; ucIdx++) {
-				prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[ucIdx] =
-					prEvent->rLteSafeChn.au4SafeChannelBitmask[ucIdx];
-			}
-			DBGLOG(P2P, INFO, "[ACS]LTE safe channel bitmask: 0x%08x, 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
-			    prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[0],
-			    prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[1],
-			    prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[2],
-			    prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[3],
-			    prLteSafeChnInfo->rLteSafeChnList.au4SafeChannelBitmask[4]);
-		}
-
-		kalOidComplete(prGlueInfo, prCmdInfo->fgSetQuery, u4QueryInfoLen, WLAN_STATUS_SUCCESS);
+	if (!prP2pFsmInfo) {
+		DBGLOG(NIC, WARN, "NULL prP2pFsmInfo, p2p is removed?\n");
+		return;
 	}
+
+	/* Statistics from FW is valid */
+	if (prEvent->u4Flags & BIT(0)) {
+		for (ucIdx = 0; ucIdx < 5; ucIdx++) {
+			rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[ucIdx] =
+				prEvent->rLteSafeChn.au4SafeChannelBitmask[ucIdx];
+		}
+		DBGLOG(NIC, INFO, "[ACS]LTE safe channel bitmask: 0x%08x, 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
+		    rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[0],
+		    rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[1],
+		    rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[2],
+		    rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[3],
+		    rLteSafeChnInfo.rLteSafeChnList.au4SafeChannelBitmask[4]);
+	} else {
+		DBGLOG(NIC, ERROR, "FW's event is NOT valid.\n");
+	}
+	p2pFunProcessAcsReport(prAdapter,
+			&rLteSafeChnInfo,
+			&(prP2pFsmInfo->rAcsReqInfo));
 }
-#endif
 
 /*----------------------------------------------------------------------------*/
 /*!

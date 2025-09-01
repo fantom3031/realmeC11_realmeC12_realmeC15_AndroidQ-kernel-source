@@ -250,7 +250,7 @@ VOID rlmObssScanDone(P_ADAPTER_T prAdapter, P_MSG_HDR_T prMsgHdr)
 	}
 	/* end of prMsduInfo != NULL */
 	if (prBssInfo->u2ObssScanInterval > 0) {
-		DBGLOG(RLM, INFO, "Set OBSS timer (NetIdx=%d, %d sec)\n",
+		DBGLOG(RLM, EVENT, "Set OBSS timer (NetIdx=%d, %d sec)\n",
 		       prBssInfo->ucBssIndex, prBssInfo->u2ObssScanInterval);
 
 		cnmTimerStartTimer(prAdapter, &prBssInfo->rObssScanTimer, prBssInfo->u2ObssScanInterval * MSEC_PER_SEC);
@@ -353,5 +353,48 @@ VOID rlmObssTriggerScan(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo)
 
 	mboxSendMsg(prAdapter, MBOX_ID_0, (P_MSG_HDR_T) prScanReqMsg, MSG_SEND_METHOD_BUF);
 
-	DBGLOG(RLM, INFO, "Timeout to trigger OBSS scan (NetIdx=%d)!!\n", prBssInfo->ucBssIndex);
+	DBGLOG(RLM, EVENT, "Timeout to trigger OBSS scan (NetIdx=%d)!!\n",
+		prBssInfo->ucBssIndex);
+}
+
+VOID rlmObssAbortScan(P_ADAPTER_T prAdapter)
+{
+	P_BSS_INFO_T prBssInfo = NULL;
+	P_SCAN_INFO_T prScanInfo;
+	P_SCAN_PARAM_T prScanParam;
+	CMD_SCAN_CANCEL rCmdScanCancel;
+
+	prScanInfo = &(prAdapter->rWifiVar.rScanInfo);
+	prScanParam = &prScanInfo->rScanParam;
+	prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter,
+		prAdapter->prAisBssInfo->ucBssIndex);
+	if (prScanInfo->eCurrentState == SCAN_STATE_IDLE) {
+		DBGLOG(RLM, STATE, "SCAN IDLE Do Nothing\n");
+		return;
+	}
+	if (prBssInfo && (prScanParam->ucSeqNum == 0x33)
+		&& (prScanParam->fgIsObssScan == TRUE)) {
+		/* obss scan no scan done change IDLE */
+		/* Cancel obss scan */
+		rCmdScanCancel.ucSeqNum = prScanParam->ucSeqNum;
+		rCmdScanCancel.ucIsExtChannel = (UINT_8) FALSE;
+		wlanSendSetQueryCmd(prAdapter,
+			CMD_ID_SCAN_CANCEL,
+			TRUE,
+			FALSE,
+			FALSE,
+			NULL,
+			NULL,
+			sizeof(CMD_SCAN_CANCEL),
+			(PUINT_8)&rCmdScanCancel,
+			NULL,
+			0);
+		/* Init the Obss Timer */
+		cnmTimerStopTimer(prAdapter,
+			&prBssInfo->rObssScanTimer);
+		prBssInfo->u2ObssScanInterval = 0;
+		DBGLOG(RLM, STATE,
+			"Obss can timeout change IDLE\n");
+		scnFsmSteps(prAdapter, SCAN_STATE_IDLE);
+	}
 }

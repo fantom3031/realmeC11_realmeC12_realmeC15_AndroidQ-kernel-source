@@ -30,6 +30,7 @@
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
 */
+
 #include "osal.h"
 #include "connectivity_build_in_adapter.h"
 
@@ -1056,7 +1057,7 @@ INT32 osal_fifo_init(P_OSAL_FIFO pFifo, UINT8 *buffer, UINT32 size)
 
 	if (pFifo->pFifoBody != NULL) {
 		pr_err("%s:Because pFifo room is avialable, we clear the room and allocate them again.\n", __func__);
-		pFifo->FifoDeInit(pFifo->pFifoBody);
+		pFifo->FifoDeInit(pFifo);
 		pFifo->pFifoBody = NULL;
 	}
 
@@ -1074,6 +1075,7 @@ VOID osal_fifo_deinit(P_OSAL_FIFO pFifo)
 		return;
 	}
 	kfree(pFifo->pFifoBody);
+	pFifo->pFifoBody = NULL;
 }
 
 INT32 osal_fifo_reset(P_OSAL_FIFO pFifo)
@@ -1267,6 +1269,9 @@ INT32 osal_wake_lock_count(P_OSAL_WAKE_LOCK pLock)
 #if !defined(CONFIG_PROVE_LOCKING)
 INT32 osal_unsleepable_lock_init(P_OSAL_UNSLEEPABLE_LOCK pUSL)
 {
+	if (pUSL->init_flag)
+			return -1;
+		pUSL->init_flag = 1;
 	spin_lock_init(&(pUSL->lock));
 	return 0;
 }
@@ -1286,6 +1291,7 @@ INT32 osal_unlock_unsleepable_lock(P_OSAL_UNSLEEPABLE_LOCK pUSL)
 
 INT32 osal_unsleepable_lock_deinit(P_OSAL_UNSLEEPABLE_LOCK pUSL)
 {
+	pUSL->init_flag = 0;
 	return 0;
 }
 
@@ -1302,6 +1308,10 @@ INT32 osal_unsleepable_lock_deinit(P_OSAL_UNSLEEPABLE_LOCK pUSL)
 #if !defined(CONFIG_PROVE_LOCKING)
 INT32 osal_sleepable_lock_init(P_OSAL_SLEEPABLE_LOCK pSL)
 {
+	if (pSL->init_flag)
+			return -1;
+		pSL->init_flag = 1;
+
 	mutex_init(&pSL->lock);
 	return 0;
 }
@@ -1325,6 +1335,9 @@ INT32 osal_trylock_sleepable_lock(P_OSAL_SLEEPABLE_LOCK pSL)
 
 INT32 osal_sleepable_lock_deinit(P_OSAL_SLEEPABLE_LOCK pSL)
 {
+	if (!pSL->init_flag)
+		return -1;
+	pSL->init_flag = 0;
 	mutex_destroy(&pSL->lock);
 	return 0;
 }
@@ -1401,7 +1414,7 @@ VOID osal_buffer_dump(const PUINT8 buf, const PUINT8 title, const UINT32 len, co
 {
 	INT32 k;
 	UINT32 dump_len;
-	char str[64] = {""};
+	char str[DBG_LOG_STR_SIZE] = {""};
 	INT32 strlen = 0;
 	char *p;
 
@@ -1430,7 +1443,7 @@ VOID osal_buffer_dump_data(const PUINT32 buf, const PUINT8 title, const UINT32 l
 {
 	INT32 k;
 	UINT32 dump_len;
-	char str[100] = {""};
+	char str[DBG_LOG_STR_SIZE] = {""};
 	INT32 strlen = 0;
 	char *p;
 
@@ -1550,7 +1563,8 @@ static VOID _osal_opq_dump(const char *qName, P_OSAL_OP_Q pOpQ)
 		}
 
 		if (op) {
-			printed += sprintf(buf + printed, "[%u(%u)]%p:%u(%d)(%d)-%u-",
+			printed += snprintf(buf + printed, OPQ_DUMP_LINE_BUF_SIZE - printed,
+						"[%u(%u)]%p:%u(%d)(%d)-%u-",
 						idx,
 						(rd & RB_MASK(pOpQ)),
 						op,
@@ -1559,10 +1573,13 @@ static VOID _osal_opq_dump(const char *qName, P_OSAL_OP_Q pOpQ)
 						op->result,
 						op->op.u4InfoBit);
 			for (opDataIdx = 0; opDataIdx < OPQ_DUMP_OPDATA_PER_OP; opDataIdx++)
-				printed += sprintf(buf + printed, "%zx,", op->op.au4OpData[opDataIdx]);
+				printed += snprintf(buf + printed, OPQ_DUMP_LINE_BUF_SIZE - printed,
+						"%zx,", op->op.au4OpData[opDataIdx]);
 			buf[printed-1] = ' ';
-		} else
-			printed += sprintf(buf + printed, "[%u(%u)]%p ", idx, (rd & RB_MASK(pOpQ)), op);
+		} else {
+			printed += snprintf(buf + printed, OPQ_DUMP_LINE_BUF_SIZE - printed,
+						"[%u(%u)]%p ", idx, (rd & RB_MASK(pOpQ)), op);
+		}
 		buf[printed++] = ' ';
 
 		if (idxInBuf == OPQ_DUMP_OP_PER_LINE - 1  || rd == wt - 1) {
@@ -1681,18 +1698,19 @@ VOID osal_op_history_print(struct osal_op_history *log_history, PINT8 name)
 		return;
 	}
 
+	spin_lock_irqsave(lock, flags);
 	ring_buffer = &log_history->ring_buffer;
 	queue_size = sizeof(struct osal_op_history_entry)
 			 * RING_SIZE(ring_buffer);
 
 	/* Allocate memory before getting lock to save time of holding lock */
 	queue = kmalloc(queue_size, GFP_KERNEL);
-	if (queue == NULL)
+	if (queue == NULL) {
+		spin_unlock_irqrestore(lock, flags);
 		return;
-
+	}
 	dump_ring_buffer = &log_history->dump_ring_buffer;
 
-	spin_lock_irqsave(lock, flags);
 	if (dump_ring_buffer->base != NULL) {
 		spin_unlock_irqrestore(lock, flags);
 		kfree(queue);

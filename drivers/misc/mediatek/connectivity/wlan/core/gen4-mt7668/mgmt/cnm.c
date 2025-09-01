@@ -910,6 +910,9 @@ UINT_8 cnmGetBssMaxBw(P_ADAPTER_T prAdapter, UINT_8 ucBssIndex)
 	ENUM_BAND_T eBand = BAND_NULL;
 	P_P2P_ROLE_FSM_INFO_T prP2pRoleFsmInfo = (P_P2P_ROLE_FSM_INFO_T) NULL;
 	P_P2P_CONNECTION_REQ_INFO_T prP2pConnReqInfo = (P_P2P_CONNECTION_REQ_INFO_T) NULL;
+#if (CFG_SUPPORT_SINGLE_SKU == 1)
+	UINT_8 ucChannelBw = MAX_BW_80_80_MHZ;
+#endif
 
 	prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex);
 
@@ -966,6 +969,18 @@ UINT_8 cnmGetBssMaxBw(P_ADAPTER_T prAdapter, UINT_8 ucBssIndex)
 
 	}
 
+#if (CFG_SUPPORT_SINGLE_SKU == 1)
+	if (IS_BSS_AIS(prBssInfo) && prBssDesc)
+		ucChannelBw = rlmDomainGetChannelBw(prBssDesc->ucChannelNum);
+	else
+		ucChannelBw =
+			rlmDomainGetChannelBw(prBssInfo->ucPrimaryChannel);
+	if (ucMaxBandwidth > ucChannelBw)
+		ucMaxBandwidth = ucChannelBw;
+#endif
+	DBGLOG(CNM, INFO, "pCH=%d, BW=%d\n",
+		prBssInfo->ucPrimaryChannel, ucMaxBandwidth);
+
 	return ucMaxBandwidth;
 }
 
@@ -990,7 +1005,7 @@ UINT_8 cnmGetBssMaxBwToChnlBW(P_ADAPTER_T prAdapter, UINT_8 ucBssIndex)
 P_BSS_INFO_T cnmGetBssInfoAndInit(P_ADAPTER_T prAdapter, ENUM_NETWORK_TYPE_T eNetworkType, BOOLEAN fgIsP2pDevice)
 {
 	P_BSS_INFO_T prBssInfo;
-	UINT_8 ucBssIndex, ucOwnMacIdx;
+	UINT_8 i, ucBssIndex, ucOwnMacIdx;
 
 	ASSERT(prAdapter);
 
@@ -1006,6 +1021,15 @@ P_BSS_INFO_T cnmGetBssInfoAndInit(P_ADAPTER_T prAdapter, ENUM_NETWORK_TYPE_T eNe
 		prBssInfo->fgIsPNOEnable = FALSE;
 		prBssInfo->fgIsNetRequestInActive = FALSE;
 #endif
+
+		/* initialize wlan id and status for keys */
+		prBssInfo->ucBMCWlanIndex = WTBL_RESERVED_ENTRY;
+		prBssInfo->wepkeyWlanIdx = WTBL_RESERVED_ENTRY;
+		for (i = 0; i < MAX_KEY_NUM; i++) {
+			prBssInfo->ucBMCWlanIndexSUsed[i] = FALSE;
+			prBssInfo->ucBMCWlanIndexS[i] = WTBL_RESERVED_ENTRY;
+			prBssInfo->wepkeyUsed[i] = FALSE;
+		}
 		return prBssInfo;
 	}
 
@@ -1071,12 +1095,21 @@ P_BSS_INFO_T cnmGetBssInfoAndInit(P_ADAPTER_T prAdapter, ENUM_NETWORK_TYPE_T eNe
 
 	if (ucOwnMacIdx >= HW_BSSID_NUM || ucBssIndex >= BSS_INFO_NUM)
 		prBssInfo = NULL;
-#if CFG_SUPPORT_PNO
 	if (prBssInfo) {
+#if CFG_SUPPORT_PNO
 		prBssInfo->fgIsPNOEnable = FALSE;
 		prBssInfo->fgIsNetRequestInActive = FALSE;
-	}
 #endif
+
+		/* initialize wlan id and status for keys */
+		prBssInfo->ucBMCWlanIndex = WTBL_RESERVED_ENTRY;
+		prBssInfo->wepkeyWlanIdx = WTBL_RESERVED_ENTRY;
+		for (i = 0; i < MAX_KEY_NUM; i++) {
+			prBssInfo->ucBMCWlanIndexSUsed[i] = FALSE;
+			prBssInfo->ucBMCWlanIndexS[i] = WTBL_RESERVED_ENTRY;
+			prBssInfo->wepkeyUsed[i] = FALSE;
+		}
+	}
 	return prBssInfo;
 }
 
@@ -1317,7 +1350,8 @@ VOID cnmDbdcEnableDecision(
 	P_BSS_INFO_T	prBssInfo;
 	UINT_8			ucBssIndex;
 
-	if (prAdapter->rWifiVar.ucDbdcMode != DBDC_MODE_DYNAMIC)
+	if ((prAdapter->rWifiVar.ucDbdcMode != DBDC_MODE_DYNAMIC) &&
+		(prAdapter->rWifiVar.ucDbdcMode != DBDC_MODE_STATIC))
 		return;
 
 	if (prAdapter->rWifiVar.fgDbDcModeEn) {
@@ -1330,6 +1364,8 @@ VOID cnmDbdcEnableDecision(
 								&prAdapter->rWifiVar.rDBDCSwitchGuardTimer,
 								DBDC_SWITCH_GUARD_TIME);
 		}
+		/* The DBDC is already ON, so renew WMM band information only */
+		cnmUpdateDbdcSetting(prAdapter, TRUE);
 		return;
 	}
 
@@ -1541,3 +1577,38 @@ VOID cnmFreeWmmIndex(IN P_ADAPTER_T prAdapter, IN P_BSS_INFO_T prBssInfo)
 	prBssInfo->fgIsWmmInited = FALSE;
 }
 #endif /* #if (CFG_HW_WMM_BY_BSS == 1) */
+/*----------------------------------------------------------------------------*/
+/*!
+* @brief    Release pending timer.
+*
+* @param (none)
+*
+* @return None
+*/
+/*----------------------------------------------------------------------------*/
+VOID cnmCheckPendingTimer(P_ADAPTER_T prAdapter)
+{
+	P_BSS_INFO_T prAisBssInfo;
+	P_AIS_FSM_INFO_T prAisFsmInfo;
+
+	if (prAdapter == NULL)
+		return;
+
+	/* Timer 1: rJoinTimeoutTimer
+	 * Driver couldn't get any CH_GRANT event of CH_REQ after resume
+	 * Because pending AIS join timer should do CH_ABORT to FW.
+	 * Without CH_ABORT cmd, FW CNM's FSM would keep in GRANT stage.
+	 * FW's CNM couldn't service any other CH_REQ in GRANT stage.
+	 * As a result, checking the timer in suspend flow.
+	 */
+	prAisBssInfo = prAdapter->prAisBssInfo;
+	prAisFsmInfo = &(prAdapter->rWifiVar.rAisFsmInfo);
+	if (timerPendingTimer(&prAisFsmInfo->rJoinTimeoutTimer)) {
+		DBGLOG(CNM, STATE, "[AIS] pending rJoinTimeoutTimer\n");
+		cnmTimerStopTimer(prAdapter,
+			&prAisFsmInfo->rJoinTimeoutTimer);
+		/* Release Channel */
+		aisFsmReleaseCh(prAdapter);
+		prAisFsmInfo->fgIsInfraChannelFinished = TRUE;
+	}
+}

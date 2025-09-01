@@ -62,6 +62,8 @@
 #ifndef _TDLS_H
 #define _TDLS_H
 
+#include "wlan_typedef.h"
+
 #if CFG_SUPPORT_TDLS
 
 /*******************************************************************************
@@ -242,7 +244,7 @@ typedef enum _ENUM_TDLS_LINK_OPER {
 typedef struct _TDLS_CMD_LINK_OPER_T {
 
 	UINT_8 aucPeerMac[6];
-	ENUM_TDLS_LINK_OPER oper;
+	enum nl80211_tdls_operation oper;
 } TDLS_CMD_LINK_OPER_T;
 
 typedef struct _TDLS_CMD_LINK_MGT_T {
@@ -456,6 +458,9 @@ VOID TdlsBssExtCapParse(P_STA_RECORD_T prStaRec, P_UINT_8 pucIE);
 
 WLAN_STATUS
 TdlsSendChSwControlCmd(P_ADAPTER_T prAdapter, PVOID pvSetBuffer, UINT_32 u4SetBufferLen, PUINT_32 pu4SetInfoLen);
+
+WLAN_STATUS
+TdlsTxCtrl(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, BOOLEAN fgEnable);
 
 /*******************************************************************************
 *                              F U N C T I O N S
