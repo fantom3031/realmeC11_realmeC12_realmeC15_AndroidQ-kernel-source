@@ -67,6 +67,9 @@ export CONFIG_MTK_FM_50KHZ_SUPPORT=y
     # Do build-in for Makefile checking
     export CONFIG_WLAN_DRV_BUILD_IN=y
 
+        $(info $$CONFIG_MTK_COMBO_CHIP is [${CONFIG_MTK_COMBO_CHIP}])
+        MTK_PLATFORM_ID := $(patsubst CONSYS_%,%,$(subst ",,$(CONFIG_MTK_COMBO_CHIP)))
+        $(info MTK_PLATFORM_ID is [${MTK_PLATFORM_ID}])
 
 # Otherwise we were called directly from the command line;
 # invoke the kernel build system.
