@@ -31,8 +31,8 @@
 #define CONNADP_LOG_WARN    1
 #define CONNADP_LOG_ERR     0
 
-#if defined(CONFIG_MACH_MT6765)
-#include <clk-mt6765-pg.h>
+#if defined(CONFIG_MACH_MT6779)
+#include <clk-mt6779-pg.h>
 #define DUMP_CLOCK_FAIL_CALLBACK 1
 #endif
 
