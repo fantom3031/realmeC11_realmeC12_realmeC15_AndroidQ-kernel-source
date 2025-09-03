@@ -100,7 +100,7 @@ config ANDROID_DEFAULT_SETTING
 	select MAGIC_SYSRQ
 	select MODULES
 	select MODULE_UNLOAD
-	select MODVERSIONS
+
 	select NET
 	select NET_CLS_ACT
 	select NET_CLS_BPF
