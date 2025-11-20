@@ -3045,7 +3045,7 @@ static signed int ISP_DumpReg(void)
 	CAM_ISP_INFO(dumpEnable,"0x%08X %08X", (unsigned int)(ISP_TPIPE_ADDR + 0x4BB4),
 	(unsigned int)ISP_RD32(ISP_ADDR + 0x4BB4));
 	ISP_WR32((ISP_ADDR + 0x4BB8), 0x10);
-	CAM_ISP_INFO(dumpEnable,0x%08X %08X", (unsigned int)(ISP_TPIPE_ADDR + 0x4BB8),
+	CAM_ISP_INFO(dumpEnable, "0x%08X %08X", (unsigned int)(ISP_TPIPE_ADDR + 0x4BB8),
 	(unsigned int)ISP_RD32(ISP_ADDR + 0x4BB8));
 	CAM_ISP_INFO(dumpEnable,"0x%08X %08X", (unsigned int)(ISP_TPIPE_ADDR + 0x4BBC),
 	(unsigned int)ISP_RD32(ISP_ADDR + 0x4BBC));
